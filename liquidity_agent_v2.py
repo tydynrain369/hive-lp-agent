@@ -140,6 +140,11 @@ class LPPosition:
     quote_deposited: float
     value_usd: float = 0.0
     apr: float = 0.0
+    # 2026-10-07: chain timeFactor (ms) of our liquidity-position row — the
+    # timestamp the position was last touched (deposit/top-up rebase it).
+    # The distribution contract's age bonus is computed from (now - timeFactor),
+    # so the decision layer needs it to score bonus dilution on top-ups.
+    time_factor_ms: float = 0.0
 
 @dataclass
 class PoolData:
@@ -154,8 +159,6 @@ class PoolData:
     fees_24h: float
     apr: float
     liquidity_usd: float
-    base_volume: float = 0.0
-    quote_volume: float = 0.0
     total_shares: float = 0.0
     base_quantity: float = 0.0
     quote_quantity: float = 0.0
@@ -164,8 +167,23 @@ class PoolData:
 class PriceEngine:
     def __init__(self):
         self.pools: Dict[str, PoolData] = {}
+        # Symbols to attempt market pricing for even though they appear in no
+        # pool: reward tokens from active distributions and wallet holdings.
+        # Populated by the caller BEFORE load_all(); a pool-less token cannot
+        # be discovered from pool ids, so without this it is invisible.
+        self.extra_price_candidates: set = set()
+        # What the caller ASKED us to price. Kept so a partial fill can be
+        # named explicitly instead of being hidden behind a success-shaped count.
+        self.requested_price_candidates: set = set()
+        # Pool ids the portfolio currently holds — the ONLY pools whose
+        # pair/reward tokens are worth pricing.
+        self.held_pools: set = set()
         self.token_prices: Dict[str, float] = {}
         self.token_precisions: Dict[str, int] = {}  # symbol -> precision
+        # 2026-10-02: liquidity verdicts for tokens priced from the market
+        # order book rather than from pool reserves. Declared here so a caller
+        # can read it even when load_all() has not run or market pricing failed.
+        self.market_liquidity: Dict[str, dict] = {}
         self._loaded = False
 
     def _load_token_precisions(self):
@@ -265,8 +283,6 @@ class PriceEngine:
                     base_price=base_price_in_quote, quote_price=quote_price_in_base,
                     volume_24h=volume, fees_24h=fees, apr=apr,
                     liquidity_usd=base_reserve * base_price_in_quote + quote_reserve * quote_price_in_base,
-                    base_volume=float(p.get("baseVolume", 0)),
-                    quote_volume=float(p.get("quoteVolume", 0)),
                     total_shares=float(p.get("totalShares", 0)),
                     base_quantity=base_reserve,
                     quote_quantity=quote_reserve
@@ -345,64 +361,6 @@ class PriceEngine:
             if not _derive_prices():
                 break
         
-        # ===== TRUTH OVERRIDE: real traded prices from market.metrics =====
-        # BFS-derived prices come from AMM reserve ratios, which are meaningless
-        # for thin/unbalanced pools (a pool saying 1 CENT = 0.254 POB while real
-        # trades clear at 0.001 HIVE). lastPrice is what trades actually clear at.
-        # NOTE: queried via $in chunks over OUR token set — a full-table query
-        # with limit 1000 silently misses symbols beyond the first 1000 rows.
-        try:
-            our_tokens = [s for s, p in self.token_prices.items()]
-            overridden = 0
-            self.token_volumes_24h: Dict[str, float] = {}
-            for i in range(0, len(our_tokens), 100):
-                chunk = our_tokens[i:i+100]
-                metrics = he("find", {
-                    "contract": "market", "table": "metrics",
-                    "query": {"symbol": {"$in": chunk}}, "limit": 1000
-                })
-                for m in (metrics or []):
-                    sym = m.get("symbol", "")
-                    lp_hive = float(m.get("lastPrice", 0))
-                    vol_hive = float(m.get("volume", 0))
-                    if vol_hive > 0:
-                        self.token_volumes_24h[sym] = vol_hive * hive_usd
-                    if lp_hive > 0:
-                        new_price = lp_hive * hive_usd
-                        old_price = self.token_prices.get(sym, 0)
-                        # lastPrice is the real traded price — trust it over
-                        # reserve-ratio derivations. Do NOT ratchet with min():
-                        # a one-way min() would keep stale low prices as markets
-                        # recover upward. The anchor tokens keep their pool anchor.
-                        if sym in ("SWAP.HIVE", "HIVE", "SWAP.HBD", "HBD"):
-                            self.token_prices[sym] = new_price
-                        else:
-                            self.token_prices[sym] = new_price
-                        if old_price > 0 and abs(old_price - new_price) / max(new_price, 1e-9) > 0.05:
-                            overridden += 1
-            if overridden:
-                print(f"  PriceEngine: {overridden} prices corrected from market.metrics (reserve ratios were >5% off)")
-        except Exception as e:
-            print(f"  PriceEngine: market.metrics override skipped ({e})")
-        
-        # ===== UNIT-CORRECT USD RECOMPUTATION =====
-        # base_reserve * base_price yields QUOTE UNITS (not USD) — the original
-        # formula mixed units and inflated thin-pool liquidity ~5,000x. Revalue
-        # every flow (reserves, volume, fees, APR) in its own USD price.
-        # NOTE: poolVolume fields (baseVolume/quoteVolume) are CUMULATIVE
-        # all-time, NOT 24h — so pool.volume_24h here is an all-time estimate,
-        # and pool.apr from it is meaningless (verified 2026-09-20: produced
-        # 158,065% APRs). Real 24h APR uses the min(token_volumes_24h)
-        # estimator in score_pool; pool.volume_24h is kept for reference only.
-        for pool in self.pools.values():
-            b_usd = self.token_prices.get(pool.base, 0)
-            q_usd = self.token_prices.get(pool.quote, 0)
-            pool.liquidity_usd = pool.base_reserve * b_usd + pool.quote_reserve * q_usd
-            # Cumulative all-time volume, unit-corrected (reference only)
-            pool.volume_24h = pool.base_volume * b_usd + pool.quote_volume * q_usd
-            pool.fees_24h = pool.volume_24h * 0.003
-            pool.apr = 0.0  # computed in score_pool from real 24h volumes
-        
         # Sanity clamp: reject prices that are clearly wrong
         # Only clamp if price is absurdly high (>$1M) or negative
         for sym in list(self.token_prices.keys()):
@@ -411,6 +369,79 @@ class PriceEngine:
                 print(f"  PriceEngine: clamped {sym} from ${p:.8f} to 0 (out of range)")
                 self.token_prices[sym] = 0
         
+        # 2026-10-02: fill pool-less tokens from the market order book.
+        #
+        # Every price above is derived from POOL RESERVES, so a token that has a
+        # real market but no pool at all is left at 0. That silently made ten
+        # reward tokens (BBHO, FRESA, HOP, IDD, WRD, POKEMON, BEATCZ, PEPECASH,
+        # SWAP.PEPE, SWAP.PEPET) look unpriced, which in turn made
+        # ALIVE:HEARTBEAT and ALIVE:SWAP.HIVE look dividend-free.
+        #
+        # Tydyn: "there are markets for all layer-2 Hive-Engine tokens,
+        # regardless of whether there are any buy or sell orders, but not all
+        # tokens have pools."
+        #
+        # The market price is the HIGHEST BID (what a sale realises), not
+        # lastPrice (a stale print), and the bid/ask spread is retained as a
+        # liquidity measure. Pool-derived prices are never overwritten.
+        # Candidate list: the fallback iterates only keys ALREADY in the map,
+        # and a pool-less token is never a key there. So build the candidate set
+        # explicitly — every symbol seen anywhere we know about.
+        # BOUNDED, NOT GLOBAL (2026-10-02 second fix). The previous set was
+        # token_prices keys + every pool id + extras = 213 symbols, i.e. 213
+        # sequential HTTP round-trips inside a one-shot load_all(). The run was
+        # cut short again, still missing the tokens that motivated the change.
+        # Price only what a decision about THIS portfolio consumes:
+        #   - pool pair tokens of held pools (what we could deposit into)
+        #   - reward tokens of held pools (what we would earn)
+        #   - wallet holdings (what we already own)
+        # Everything else stays unpriced, which is correct and cheap.
+        _candidates = set(self.extra_price_candidates or ())
+        try:
+            for _pid in (self.held_pools or ()):
+                _candidates.update(t for t in str(_pid).split(":") if t)
+        except Exception:
+            pass
+        try:
+            from lp_market_price import enrich_price_map
+            _before = len([s for s, p in self.token_prices.items() if p == 0])
+            self.token_prices, _added, _still = enrich_price_map(
+                self.token_prices, symbols=sorted(_candidates))
+            self.market_liquidity = _added
+            if _added:
+                _tight = sum(1 for m in _added.values() if m["liquidity"] == "tight")
+                _illiq = sum(1 for m in _added.values() if not m["sizeable"])
+                print(f"  PriceEngine: market-filled {len(_added)} of "
+                      f"{len(_candidates)} candidates "
+                      f"({_tight} tight, {_illiq} not sizeable for exit)")
+            # NAME any requested token we could not price. A quiet partial fill
+            # behind a success-shaped summary is how BBHO/FRESA/HOP went missing
+            # while the log still read "198 filled".
+            _missed = [s for s in (self.requested_price_candidates or ())
+                       if not self.token_prices.get(s)]
+            if _missed:
+                print(f"  PriceEngine: WARNING {len(_missed)} requested token(s) "
+                      f"still unpriced: {', '.join(sorted(_missed)[:12])}")
+        except Exception as e:  # noqa: BLE001
+            self.market_liquidity = {}
+            print(f"  PriceEngine: market pricing unavailable ({type(e).__name__})")
+
+        # 2026-10-02: the realisable-dividend gate needs a bid/ask spread for
+        # EVERY token a distribution is paid in, not only the pool-less ones we
+        # just filled. Pool-priced tokens have a price but no spread reading, so
+        # their yield was UNKNOWN and could never count as income — the gate
+        # was inert for exactly the tokens it exists to judge.
+        _gate_syms = set(self.extra_price_candidates or ())
+        try:
+            from lp_market_price import market_price as _mp
+            for _s in sorted(_gate_syms):
+                if _s in self.market_liquidity or self.token_prices.get(_s):
+                    _m = _mp(_s)
+                    if _m:
+                        self.market_liquidity.setdefault(_s, _m)
+        except Exception as e:  # noqa: BLE001
+            print(f"  PriceEngine: spread lookup for gate failed ({type(e).__name__})")
+
         # Report how many stayed unknown
         unknown = [s for s, p in self.token_prices.items() if p == 0]
         if unknown:
@@ -422,6 +453,67 @@ class PriceEngine:
 
     def get_pool(self, base: str, quote: str) -> Optional[PoolData]:
         return self.pools.get(f"{base}:{quote}") or self.pools.get(f"{quote}:{base}")
+
+    def exit_liquidity(self, symbols):
+        """Total exit liquidity per symbol, in HIVE (2026-10-07, PsyopDaily
+        mechanics verified against two of the site's published anchors).
+
+        exit_liquidity(T) = order-book bid depth  +  max counter-side pool
+        reserve, where:
+          - bid depth    = sum(price * quantity) over market.buyBook rows for
+            T (site anchor: WIT = 0.2432 HIVE — exact match);
+          - pool depth   = the SWAP.HIVE-side (or deepest counter-side)
+            reserve of the largest pool containing T — what a sale into the
+            pool would actually pay out (site anchor: REVX = 0.2656 HIVE,
+            exactly the SWAP.HIVE baseQuantity of SWAP.HIVE:REVX — NOT the
+            pool's TVL, which would overstate depth ~2x in the DANGEROUS
+            direction: approving an unexitable pool).
+        ANCHOR EXEMPTION (caught by the live gate, 2026-10-07): SWAP.HIVE and
+        SWAP.HBD are the L1 wrappers — their exit is the CHAIN BRIDGE
+        (SWAP.HIVE → native HIVE at 1:1), not a market. Both probes
+        legitimately read ~0 for them (SWAP.HIVE is the universal quote, so
+        nobody bids FOR it and pool sales pay the other side), which without
+        this exemption would false-positive-block every SWAP.HIVE pair from
+        expansion — half the ecosystem. Anchors are therefore exempt from
+        the floor: they appear in the map as None with this documented
+        meaning (market-unbounded), which the gate correctly does not gate.
+        Returns {symbol: depth_in_HIVE or None}. None = UNKNOWN (probe
+        failure) or MARKET-UNBOUNDED (anchor) — never zero-as-unknown; the
+        caller must treat None as not-gated, not as below-floor.
+        Scoped by the caller to exactly the symbols the decision consumes
+        (held-pool pair tokens + reward tokens) — one buyBook query per
+        symbol, bounded by that set.
+        """
+        from lp_market_price import bid_depth_hive
+        ANCHOR_EXIT_TOKENS = {"SWAP.HIVE", "SWAP.HBD"}
+        out: Dict[str, Optional[float]] = {}
+        for s in sorted(set(symbols or [])):
+            if s in ANCHOR_EXIT_TOKENS:
+                out[s] = None  # chain-bridge exit, market-unbounded — see docstring
+                continue
+            book = bid_depth_hive(s)
+            pool_depth = None
+            best = None
+            for p in self.pools.values():
+                if s not in (p.base, p.quote):
+                    continue
+                # counter-side reserve: what the sale of T lands as.
+                # Orientation: if T is base, you receive quote; and vice versa.
+                counter = p.quote_quantity if s == p.base else p.base_quantity
+                # depth must be HIVE-denominated: only counter == SWAP.HIVE
+                # is a direct reading; a non-HIVE counter is not exit depth
+                # without a conversion, so it does not count as pool depth.
+                counter_sym = p.quote if s == p.base else p.base
+                if counter_sym == "SWAP.HIVE":
+                    if best is None or counter > best:
+                        best = counter
+            if best is not None:
+                pool_depth = best
+            if book is None and pool_depth is None:
+                out[s] = None
+            else:
+                out[s] = (book or 0.0) + (pool_depth or 0.0)
+        return out
 
     def find_path(self, from_sym: str, to_sym: str) -> List[PoolData]:
         """Find swap path (max 2 hops)."""
@@ -501,14 +593,34 @@ class PortfolioManager:
                     val = 0.0
                     apr = 0.0
                     if pool:
-                        # Unit-correct: value each side at its own USD price
-                        b_usd = self.pe.token_prices.get(base, 0)
-                        q_usd = self.pe.token_prices.get(quote, 0)
-                        val = (base_dep * b_usd) + (quote_dep * q_usd)
+                        # 2026-09-30: this was STILL the mixed-unit bug that was
+                        # fixed for pools on 2026-09-20 but never for held
+                        # POSITIONS. pool.base_price / pool.quote_price are
+                        # exchange ratios (how many quote tokens per base
+                        # token), NOT USD prices. Multiplying a deposited
+                        # amount by a ratio and summing as USD inflated the
+                        # portfolio ~9,500x: it reported $13.85 for positions
+                        # actually worth $0.0015. Tydyn caught it — "way more
+                        # than we have."
+                        # Correct form: amount * USD price, per token, from the
+                        # separately validated token-price map. A missing price
+                        # must read as UNKNOWN, never as 0 (which would silently
+                        # understate) and never as a ratio.
+                        p_base = self.pe.token_prices.get(base)
+                        p_quote = self.pe.token_prices.get(quote)
+                        if p_base is not None and p_quote is not None:
+                            val = (base_dep * p_base) + (quote_dep * p_quote)
+                        else:
+                            val = 0.0
+                            missing = [t for t, v in
+                                       ((base, p_base), (quote, p_quote)) if v is None]
+                            print(f"  Warning: no USD price for {missing} in {token_pair}"
+                                  f" — value unknown, reported as 0")
                         apr = pool.apr
                     
                     pid = f"{base}:{quote}"
-                    self.positions[pid] = LPPosition(pid, base, quote, shares, base_dep, quote_dep, val, apr)
+                    self.positions[pid] = LPPosition(pid, base, quote, shares, base_dep, quote_dep, val, apr,
+                                                      time_factor_ms=float(p.get("timeFactor", 0) or 0))
                 except Exception as e:
                     print(f"  Warning: Failed to parse position {p}: {e}")
                     continue
@@ -533,14 +645,8 @@ class PoolAnalyzer:
     def score_pool(self, pool: PoolData) -> dict:
         """Score pool 0-1 for LP attractiveness."""
         liq = pool.liquidity_usd
-        # Conservative 24h volume estimate: pool turnover moves BOTH tokens,
-        # so pool volume <= min(token volumes) — never overestimates.
-        vol_a = getattr(self.pe, 'token_volumes_24h', {}).get(pool.base, 0)
-        vol_b = getattr(self.pe, 'token_volumes_24h', {}).get(pool.quote, 0)
-        vol_24h = min(vol_a, vol_b)
-        vol_liq = vol_24h / liq if liq > 0 else 0
-        # Real 24h APR: fees from conservative volume estimate / liquidity
-        apr = (vol_24h * 0.003 / liq) * 365 * 100 if liq > 0 else 0.0
+        apr = pool.apr
+        vol_liq = pool.volume_24h / liq if liq > 0 else 0
         
         # Liquidity score (0-1): want deep pools
         liq_score = min(liq / 10000, 1.0)

@@ -22,6 +22,10 @@ from lp_decision import decide, write_decision
 from lp_executor_test import execute_from_decision
 
 REPORTS_DIR = os.path.join(os.path.dirname(__file__), "reports")
+# 2026-10-10: fallback HIVE price for the reward-per-HIVE term when the
+# price map lacks a SWAP.HIVE row (the engine normally prices it; this is
+# the belt-and-braces default). Named, not inline, per the standing rule.
+HIVE_USD_FALLBACK = 0.057
 
 
 # ---- Reward Discovery (Progressive Liquidity Discovery) ----
@@ -34,25 +38,114 @@ def discover_rewards(pe, portfolio):
         # --- Primary: Distribution contract (pool rewards) ---
         dist = he('find', {'contract': 'distribution', 'table': 'batches',
                           'query': {'active': True, 'strategy': 'pool'}, 'limit': 1000})
+        # 2026-10-07 FIX (live bug): the tick length is a contract PARAM, not a
+        # batch field. The old code read b.get('tickHours') or
+        # b.get('distributionPeriodHours') — fields that DO NOT EXIST on batch
+        # rows — so period_hours was always None downstream. lp_reward_math and
+        # lp_position_scenario already read the deployed params; mirror them.
+        try:
+            dp = he('findOne', {'contract': 'distribution', 'table': 'params', 'query': {}}) or {}
+        except Exception:
+            dp = {}
+        dist_tick_hours = None
+        try:
+            dist_tick_hours = float(dp.get('distTickHours', 0) or 0) or None
+        except (TypeError, ValueError):
+            dist_tick_hours = None
         for b in dist:
             pair = b.get('tokenPair', '')
             if not pair:
                 continue
+            # 2026-10-08 FIX (multi-batch bug #1b): exhausted batches
+            # (numTicksLeft=0) never pay again — the deployed scheduler
+            # consumes ticks, and with none left the remaining tokenBalances
+            # are dead budget, not income. Reporting them made exhausted
+            # batches look like live reward streams (phantom presence and
+            # phantom value). Filter at the source. Per the standing rule:
+            # an expired batch coexisting with a live replacement is normal —
+            # only the LIVE replacement's entries survive this filter.
+            try:
+                _ticks_left = int(b.get('numTicksLeft', 0) or 0)
+            except (TypeError, ValueError):
+                _ticks_left = 0
+            # 2026-10-08 FIX (multi-batch bug #1a): ACCUMULATE entries across
+            # ALL live batches of a pool instead of overwriting — assignment
+            # kept only the LAST batch, so a pool paying through two
+            # concurrent contracts silently lost the other's entire income
+            # from scoring. Live cases: 36 pools run >1 batch (DVS:DHEDGE:
+            # batch 179 with 124 ticks left AND batch 329 with 626 ticks left
+            # — whichever processed last erased the other from the decision).
+            # exhausted-filter (bug #1b) above: only batches with ticks LEFT
+            # produce entries, so accumulation counts live income only.
+            # The exhausted-batch skip below this block is retained as a
+            # second guard (belt and braces) — see #1b.
+            if _ticks_left <= 0:
+                continue
+            # 2026-10-08: batch-scoped metadata. Fields a pool can differ on
+            # across batches (curve, our position age, runway) are PER-BATCH
+            # facts; the consumer must never read the last batch's value as
+            # the pool's. days_remaining uses the MAX across live batches
+            # (most optimistic runway is the honest bound for 'does this
+            # pool still pay'), and entries carry their own curve so dilution
+            # math stays per-batch.
             tokens = b.get('tokenBalances', [])
-            # Calculate daily reward per token (quantity / numTicks)
+            # 2026-09-30: these figures are the ENTIRE batch's tokenBalances
+            # divided by numTicks — i.e. the whole distribution spread across all
+            # LPs, not our share, and not a per-day figure in a literal sense.
+            # Dividing by numTicks converts a 7-day batch into a per-tick amount;
+            # the number is therefore "per tick, for the whole pool", which is
+            # only equal to a daily figure when numTicks is 1. Tydyn confirmed
+            # this reading directly: the values looked like whole-period
+            # distribution totals rather than his own earnings. Report the
+            # denominator explicitly instead of asserting "per day", and do NOT
+            # compare these magnitudes across tokens — deflationary high-supply
+            # tokens (e.g. THREE, quoted in billions) are not comparable to
+            # low-supply ones without a price map.
             num_ticks = int(b.get('numTicks', 1))
             total_qty = sum(float(t.get('quantity', 0)) for t in tokens)
-            daily = total_qty / max(num_ticks, 1)
-            reward_tokens = [t['symbol'] for t in tokens]
-            reward_discovery[pair] = [{
+            # 2026-10-07: tickHours fix — use the contract param, fall back to the
+            # declared one-tick-per-day equivalence (Tydyn 2026-10-02), never a
+            # nonexistent batch field.
+            tick_hours = dist_tick_hours  # contract param, verified source
+            # 2026-10-07: carry the age-bonus data the decision layer needs to
+            # score top-up dilution (PsyopDaily mechanics, browser-verified
+            # 2026-10-07): the batch's bonusCurve plus OUR position's timeFactor.
+            # Both are already in hand (batch row; our position row) — no extra
+            # network calls. The age bonus applies per BATCH, and one pool can
+            # carry multiple active batches, so the curve rides each entry.
+            # days_remaining: reward-batch runway (PsyopDaily flags under 14
+            # days as 'rewards end soon'). numTicksLeft x tickHours, using the
+            # contract param fixed earlier this session.
+            our_tf = None
+            _pos = portfolio.positions.get(pair)
+            if _pos is not None:
+                our_tf = float(getattr(_pos, 'time_factor_ms', 0) or 0) or None
+            try:
+                _ticks_left = int(b.get('numTicksLeft', 0) or 0)
+                _days_left = _ticks_left * (tick_hours or 24.0) / 24.0
+            except (TypeError, ValueError):
+                _days_left = None
+            reward_discovery.setdefault(pair, []).extend([{
                 'mined_token': t['symbol'],
                 'daily_reward': float(t['quantity']) / max(num_ticks, 1),
+                'whole_batch_quantity': float(t['quantity']),
+                'num_ticks': num_ticks,
+                'period_hours': tick_hours,
+                'denominator': 'whole batch tokenBalances / numTicks (NOT our share)',
+                'units_comparable_across_tokens': False,
                 'lottery_winners': 0,  # pool distribution, not lottery
                 'lottery_interval_hours': 24,
                 'token_balance': float(t['quantity']),
-                'num_ticks': num_ticks,
-                'type': 'distribution'
-            } for t in tokens]
+                'type': 'distribution',
+                # ---- age-bonus fields (2026-10-07) ----
+                'bonus_curve': b.get('bonusCurve'),
+                'our_time_factor_ms': our_tf,
+                'tick_hours': tick_hours,
+                'days_remaining': _days_left,
+                # ---- batch-scoped identity (2026-10-08) ----
+                'batch_id': str(b.get('_id', '')),
+                'batch_ticks_left': _ticks_left,
+            } for t in tokens])
         print(f"  DEBUG: distribution contract returned {len(dist)} pools")
         # --- Secondary: Mining contract (lottery rewards) ---
         mining = he('find', {'contract': 'mining', 'table': 'pools', 'query': {}})
@@ -61,21 +154,33 @@ def discover_rewards(pe, portfolio):
                 continue
             external_miners = m.get('externalMiners', '')
             mined_token = m.get('minedToken', '')
-            # Only add if not already in reward_discovery
-            if external_miners and external_miners not in reward_discovery:
+            # 2026-10-08 FIX (multi-stream bug #2): the old
+            # `external_miners not in reward_discovery` guard made a pool
+            # paying through BOTH the distribution contract AND the mining
+            # lottery lose its ENTIRE lottery income the moment any
+            # distribution batch existed for it — the two streams are
+            # independent income and must both score. Live cases:
+            # SWAP.HIVE:PAL and MEME:LOLZ. Accumulate alongside
+            # distribution entries instead of skipping.
+            if external_miners:
                 lottery_winners = int(m.get('lotteryWinners', 0))
                 lottery_interval = float(m.get('lotteryIntervalHours', 24))
                 lottery_amount = float(m.get('lotteryAmount', 0))
                 daily_lotteries = 24 / lottery_interval if lottery_interval > 0 else 0
                 daily_reward = lottery_amount * lottery_winners * daily_lotteries
-                reward_discovery[external_miners] = [{
+                # 2026-10-08 FIX (multi-stream bug #2b): EXTEND, not assign.
+                # The removed skip-guard was accidentally masking a SECOND
+                # overwrite bug: mining assignment would have REPLACED the
+                # distribution entries of any dual-stream pool. Both
+                # streams are independent income; accumulate.
+                reward_discovery.setdefault(external_miners, []).extend([{
                     'mined_token': mined_token,
                     'daily_reward': daily_reward,
                     'lottery_winners': lottery_winners,
                     'lottery_interval_hours': lottery_interval,
                     'lottery_amount': lottery_amount,
                     'type': 'mining'
-                }]
+                }])
         print(f"  DEBUG: total reward_discovery entries: {len(reward_discovery)} pools")
     except Exception as e:
         print(f"  ERROR in reward discovery: {e}")
@@ -493,11 +598,65 @@ def record_fee_snapshots(rpc, account, positions, *, store_path=None, at_ms,
                  at_ms=at_ms, contract_hash=contract_hash)
 
 
-def fee_snapshots_section(agent):
-    """Wire live RPC into the collector for every held LP position."""
+def candidate_watchlist(agent, held_pools, reward_pairs, limit=30):
+    """Pools the decision layer might CHOOSE, for fee-evidence pre-measurement.
+
+    2026-10-10 (the honest-limitation fix): fee snapshots ran over held
+    positions only, so a candidate pool's fee APR was permanently unknown
+    at the moment of choice — the CENT:TRIBE comparison was rewards-only
+    because CENT:TRIBE had never been held. This watchlist adds pools we
+    COULD deploy into: every pool pairing a wallet token, then the richest
+    reward-paying pools, capped at a named limit. Snapshots carry
+    scope='candidate' so downstream consumers can distinguish them.
+    """
+    watch = {}
+    held = set(held_pools or [])
+    # 1. pools pairing any wallet token (what we can deploy into directly)
+    wallet_syms = set((getattr(agent.portfolio, "balances", None) or {}).keys()) \
+        if hasattr(agent.portfolio, "balances") else set()
+    for pair, pool in (getattr(agent.pe, "pools", None) or {}).items():
+        if pair in held:
+            continue
+        b, _, q = pair.partition(":")
+        if b in wallet_syms or q in wallet_syms:
+            watch[pair] = "wallet-token pool"
+    # 2. top reward-paying pools not already held or watched
+    def reward_value_usd(entries):
+        total = 0.0
+        for e in (entries or []):
+            if not isinstance(e, dict):
+                continue
+            qty = e.get("daily_reward")
+            sym = e.get("mined_token")
+            if qty is None or not sym:
+                continue
+            px = (getattr(agent.pe, "token_prices", None) or {}).get(sym)
+            if px:
+                total += qty * px
+        return total
+    ranked = sorted(((reward_value_usd(v), k) for k, v in (reward_pairs or {}).items()),
+                    key=lambda t: -t[0])
+    for value, pair in ranked:
+        if len(watch) >= limit:
+            break
+        if pair in held or pair in watch:
+            continue
+        watch[pair] = f"reward-paying pool (${value:.4f}/tick)"
+    return dict(list(watch.items())[:limit])
+
+
+def fee_snapshots_section(agent, extra_pairs=None):
+    """Wire live RPC into the collector for every held LP position.
+
+    2026-10-10: extra_pairs (the candidate watchlist) get snapshots too,
+    each tagged scope='candidate', so future decisions have fee evidence
+    for pools BEFORE they are chosen — closing the 'rewards-only for new
+    destinations' limitation.
+    """
     lp = getattr(agent.portfolio, 'positions', {}) or {}
-    if not lp:
-        print("  [FEE] no LP positions; no snapshots taken")
+    extra = list((extra_pairs or {}).keys())
+    if not lp and not extra:
+        print("  [FEE] no LP positions and no candidates; no snapshots taken")
         return None
     try:
         contract = he('getContract', {'name': 'marketpools'})
@@ -508,16 +667,38 @@ def fee_snapshots_section(agent):
     def rpc(c, t, q):
         return he('find', {'contract': c, 'table': t, 'query': q, 'limit': 1000})
     account = getattr(agent.portfolio, 'account', 'hermes-sandbox')
-    out = record_fee_snapshots(rpc, account, sorted(lp),
+    # 2026-10-10: held positions first (scope='held'), then the candidate
+    # watchlist (scope='candidate') — same store, tagged by scope so fee
+    # evidence accumulates for pools BEFORE the decision layer needs it.
+    all_pairs = sorted(lp) + [p for p in extra if p not in lp]
+    out = record_fee_snapshots(rpc, account, all_pairs,
                                store_path=FEE_SNAPSHOT_STORE,
                                at_ms=int(datetime.now().timestamp() * 1000),
                                contract_hash=code_hash)
+    held_set = set(lp)
     for pair, r in (out or {}).get('results', {}).items():
-        print(f"  [FEE] {pair}: {r.get('status')}"
+        scope = 'held' if pair in held_set else 'candidate'
+        print(f"  [FEE:{scope}] {pair}: {r.get('status')}"
               + (f" reason={r.get('reason')}" if r.get('reason') else ""))
         d = r.get('diff')
         if d and d.get('status') == 'measured':
-            print(f"        attributable fees: {d['attributable_fees']}")
+            # 2026-09-30: this used to print `attributable_fees` as {'CENT':'0',
+            # 'POB':'0'}, which read as "we earned nothing" and looked like a
+            # measurement. It was reserve-delta mislabelled as fees, and the
+            # underlying values included NEGATIVE fee legs. The reconciler no
+            # longer claims fee income; print what it actually has and point at
+            # the volume-based measurement as the real source.
+            print("        fee basis: " + str(d.get('fee_basis', 'unknown')))
+            rm = d.get('reserve_movement') or {}
+            if rm:
+                parts = []
+                for sym, mv in rm.items():
+                    try:
+                        v = float(mv['our_share_of_delta'])
+                        parts.append(f"{sym}={v:+.4g}")
+                    except (TypeError, ValueError):
+                        parts.append(f"{sym}=?")
+                print("        net reserve movement (NOT fees): " + ", ".join(parts))
     return out
 
 
@@ -527,6 +708,66 @@ def main():
 
     # Initialize agent
     agent = LiquidityAgent()
+
+    # 2026-10-02: tell the PriceEngine which symbols to attempt MARKET pricing
+    # for even though they appear in no pool. Reward tokens and wallet holdings
+    # are exactly the pool-less set — BBHO, FRESA, HOP, IDD, WRD, POKEMON,
+    # BEATCZ, PEPECASH, SWAP.PEPE, SWAP.PEPET all read 0 without this, which is
+    # what made ALIVE:HEARTBEAT and ALIVE:SWAP.HIVE look dividend-free. They
+    # cannot be discovered from pool ids, so the caller must supply them.
+    # SCOPED, NOT GLOBAL (2026-10-02): the first attempt supplied every symbol
+    # from every active distribution (~200), which meant ~200 sequential HTTP
+    # round-trips inside a one-shot load_all(). The run was cut short partway,
+    # so the tokens that motivated the change were never priced while the
+    # summary still read "198 filled" — an aggregate that hid a total miss on
+    # the specific set. Only OUR held pools' reward tokens plus wallet holdings
+    # can affect a decision about OUR portfolio, so that is all we ask for.
+    _cands = set()
+    _needed = set()
+    try:
+        # Positions are NOT loaded yet at this point in the sequence, so
+        # agent.portfolio.positions is empty here. That silently emptied the
+        # distribution filter and left the candidate set wallet-only — which is
+        # why BEATCZ/PEPECASH/FRESA never got priced. Take the held pools
+        # directly from the portfolio loader instead.
+        try:
+            agent.portfolio.load_positions()
+            _needed = set(str(k) for k in (agent.portfolio.positions or {}).keys())
+        except Exception:
+            _needed = set()
+        _dist = he('find', {'contract': 'distribution', 'table': 'batches',
+                            'query': {'active': True, 'strategy': 'pool'},
+                            'limit': 1000})
+        for _b in (_dist or []):
+            if _b.get('tokenPair') in _needed:
+                for _t in (_b.get('tokenBalances') or []):
+                    _sym = _t.get('symbol')
+                    if _sym:
+                        _cands.add(_sym)
+    except Exception:
+        pass
+    try:
+        _bal = he('find', {'contract': 'tokens', 'table': 'balances',
+                           'query': {'account': 'hermes-sandbox'}, 'limit': 200})
+        for _b in (_bal or []):
+            _sym = _b.get('symbol')
+            if _sym:
+                _cands.add(_sym)
+    except Exception:
+        pass
+    # Pool pair tokens too — they are what we would deposit into.
+    for _pid in list(agent.pe.pools.keys())[:0]:
+        pass
+    # Which pools we actually hold — the PriceEngine bounds market pricing to
+    # these, so we make a handful of HTTP calls instead of 213.
+    _held = sorted(_needed) or list((agent.portfolio.positions or {}).keys())
+    agent.pe.held_pools = set(_held)
+    agent.pe.extra_price_candidates = _cands
+    # Remember what we ASKED for so a partial fill can be named, not hidden.
+    agent.pe.requested_price_candidates = set(_cands)
+    print(f"  Market pricing scoped to {len(_cands)} symbols for held pools: "
+          f"{', '.join(sorted(_held))}")
+
     agent.pe.load_all()
     agent.portfolio.load_balances()
     agent.portfolio.load_positions()
@@ -551,13 +792,40 @@ def main():
 
     # ---- FEE EVIDENCE SNAPSHOTS (read-only, longitudinal attribution) ----
     print("\n=== FEE EVIDENCE SNAPSHOTS ===")
-    fee_snapshots_section(agent)
+    # 2026-10-10: candidates get snapshots too — pre-measure fee evidence
+    # for pools the decision might choose, so their fee APR is not unknown
+    # at the moment of choice (the CENT:TRIBE rewards-only limitation).
+    try:
+        _held_for_watch = sorted(agent.portfolio.positions.keys())
+        _watch = candidate_watchlist(agent, _held_for_watch, reward_discovery)
+        if _watch:
+            print(f"  candidate watchlist: {len(_watch)} pools "
+                  f"({', '.join(list(_watch)[:8])}{'…' if len(_watch) > 8 else ''})")
+    except Exception as _e:
+        _watch = {}
+        print(f"  candidate watchlist unavailable ({type(_e).__name__}) — held-only snapshots")
+    fee_snapshots_section(agent, extra_pairs=_watch)
 
     # ---- RECOMMENDATION (read-only advisory; never auto-executes) ----
     print("\n=== RECOMMENDATION ===")
     try:
         held_pools = sorted(agent.portfolio.positions.keys())
-        rec = generate_recommendation(held_pools, reward_discovery, price_engine=agent.pe)
+        # 2026-09-30: pass pool+position so the report can show OUR
+        # entitlement, not just the whole-pool distribution. Without this
+        # the agent says a pool is "reward-productive" while we earn
+        # nothing visible, which is exactly the gap Tydyn spotted.
+        position_lookup = {}
+        for pid in held_pools:
+            pos = agent.portfolio.positions.get(pid)
+            if pos is None:
+                continue
+            b, q = pid.split(":", 1)
+            pool = agent.pe.get_pool(b, q)
+            if pool is not None:
+                position_lookup[pid] = (pool, pos)
+        rec = generate_recommendation(held_pools, reward_discovery,
+                                     position_lookup=position_lookup,
+                                     price_map=agent.pe.token_prices)
         out_path = write_recommendation(rec, REPORTS_DIR)
         for v in rec["verdicts"].values():
             print(f"  {v['pool']:25s} {v['classification']:18s} fees={v['fee_apr_pct']}% rewards={v['reward_token_count']}")
@@ -572,7 +840,70 @@ def main():
     # Execution: tiny capped test transactions; DRY-RUN unless LP_TEST_LIVE=1
     print("\n=== DECISION ===")
     try:
-        decision = decide(held_pools, reward_discovery)
+        # 2026-09-30: feed the realized economics and threshold distance into the
+        # decision layer, otherwise every position defaults to "hold" forever
+        # and the agent can never act on a concentration strategy.
+        eco_map = {p: v.get("position_economics") for p, v in rec["verdicts"].items()
+                   if v.get("position_economics")}
+        th_map = {p: v.get("threshold_analysis") for p, v in rec["verdicts"].items()
+                  if v.get("threshold_analysis")}
+        # 2026-10-02: bid/ask spreads so a dividend paid in unsellable tokens
+        # cannot score as income. Derived from the liquidity verdicts the
+        # PriceEngine already gathered, so no extra network cost.
+        _spread_map = {sym: (m["spread_pct"] / 100.0)
+                       for sym, m in (agent.pe.market_liquidity or {}).items()
+                       if m.get("spread_pct") is not None}
+        # 2026-10-07: exit-liquidity map for the destination-safety gate —
+        # scoped to exactly the symbols the decision consumes: held pools'
+        # pair tokens plus their reward tokens (the same candidate set the
+        # spread gate uses). None depth never gates (unknown ≠ zero).
+        try:
+            _exit_syms = set()
+            for _pid in held_pools:
+                _b, _q = _pid.split(":", 1)
+                _exit_syms.update({_b, _q})
+                for _r in (reward_discovery.get(_pid) or []):
+                    if isinstance(_r, dict) and _r.get("mined_token"):
+                        _exit_syms.add(_r["mined_token"])
+            _exit_map = agent.pe.exit_liquidity(sorted(_exit_syms))
+            _below_floor = [s for s, v in _exit_map.items()
+                            if v is not None and v < 0.5]
+            if _below_floor:
+                print(f"  Exit-liquidity: {len(_below_floor)} token(s) under the "
+                      f"0.5 HIVE floor: {', '.join(_below_floor)}")
+        except Exception as _e:
+            _exit_map = None
+            print(f"  Exit-liquidity lookup failed ({type(_e).__name__}) — gate not applied")
+        # 2026-10-10: pool TVL in HIVE for the reward-per-HIVE scoring term
+        # (Tydyn's CENT question: rank destinations by what a NEW HIVE
+        # deposited there would capture per day). Built from the same
+        # PriceEngine pool data the decision already consumes — no extra
+        # network cost. Pool TVL in HIVE = liquidity_usd / HIVE price.
+        try:
+            _hive_usd_px = agent.pe.token_prices.get("SWAP.HIVE") or HIVE_USD_FALLBACK
+            _tvl_map = {}
+            for _pid, _pool in (agent.pe.pools or {}).items():
+                if _pool.liquidity_usd and _hive_usd_px:
+                    _tvl_map[_pid] = _pool.liquidity_usd / _hive_usd_px
+        except Exception:
+            _tvl_map = None
+            print("  Pool-TVL map unavailable — reward-per-HIVE term inactive this run")
+        decision = decide(held_pools, reward_discovery,
+                          position_economics=eco_map,
+                          threshold_analysis=th_map,
+                          fee_evidence_override={
+                              p: {"fee_apr_pct_authoritative": v.get("fee_apr_pct")}
+                              for p, v in rec["verdicts"].items()
+                              if v.get("fee_apr_pct") is not None
+                          },
+                          # 2026-10-02: without a price map the decision layer
+                          # cannot value a distribution, so every pool would read
+                          # dividend_usd=None and the new dividend scoring would
+                          # silently never fire.
+                          price_map=agent.pe.token_prices,
+                          spread_map=_spread_map,
+                          exit_liquidity_map=_exit_map,
+                          pool_tvl_map=_tvl_map)
         for pool, v in decision.verdicts.items():
             print(f"  {pool:25s} {v.action:12s} fee_apr={v.fee_apr_pct}% rewards={v.reward_token_count} — {v.reason}")
         if decision.recommended_reallocation:
@@ -580,6 +911,46 @@ def main():
             print(f"  RECO: {r['from_pool']} -> {r['to_pool']} ({r['rationale']})")
         dpath = write_decision(decision)
         print(f"  Wrote {dpath}")
+
+        # --- ADVISORY ADJUDICATION (2026-10-02) ------------------------------
+        # Strictly read-only and non-blocking. The LLM reviews the decision
+        # AFTER it is written and can change nothing. It never sees keys, never
+        # produces an amount, and its verdict is stored in a sidecar file.
+        # Any failure here is swallowed: advisory must never break the agent.
+        try:
+            import lp_advisory
+            rec_verdicts = {}
+            try:
+                import glob as _glob, os as _os
+                _reps = sorted(_glob.glob("/home/tydynrain/.hermes/scripts/reports/"
+                                         "recommendation-*.json"))
+                if _reps:
+                    rec_verdicts = (json.load(open(_reps[-1])) or {}).get(
+                        "verdicts", {}) or {}
+            except Exception:
+                rec_verdicts = {}
+
+            adv = lp_advisory.adjudicate(decision.to_dict(), rec_verdicts)
+            sidecar = dpath.replace(".json", ".advisory.json")
+            with open(sidecar, "w") as fh:
+                json.dump({
+                    "adjudicated_decision": dpath,
+                    "verdict": adv.get("verdict"),
+                    "reason": adv.get("reason"),
+                    "ok": adv.get("ok"),
+                    "ms": adv.get("ms"),
+                    "model": adv.get("model"),
+                    "possible_quantity_leak": adv.get("possible_quantity_leak"),
+                    "authority": "ADVISORY ONLY — no effect on the decision",
+                }, fh, indent=2)
+            flag = "  <-- REVIEW" if adv.get("verdict") == "CHALLENGE" else ""
+            print(f"  ADVISORY: {adv.get('verdict')} ({adv.get('ms')}ms){flag}")
+            if adv.get("verdict") == "CHALLENGE":
+                print(f"    {adv.get('reason','')[:180]}")
+            if adv.get("possible_quantity_leak"):
+                print("    *** advisory emitted a quantity — boundary violation, ignored ***")
+        except Exception as e:
+            print(f"  Advisory step skipped (non-fatal): {type(e).__name__}")
     except Exception as e:
         print(f"  Decision step failed (non-fatal): {e}")
         decision = None

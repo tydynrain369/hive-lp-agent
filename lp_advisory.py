@@ -1,0 +1,272 @@
+#!/usr/bin/env python3
+"""LP Advisory LLM — ADJUDICATOR, never a decider.
+
+Defaulted to nvidia/nemotron-3-ultra-550b-a55b as of 2026-10-04. Previously
+capability window (preview ends 2026-10-05), so the module is written so the
+model is a CONFIGURABLE parameter: swapping to llama-turbo later is a one-line
+change, not a rewrite.
+
+HARD BOUNDARY (from hive-lp-decision-preferences):
+  The LLM never produces an amount, a position size, or an executable quantity.
+  Python remains authoritative for every number. The model only returns:
+      verdict : CORROBORATE | CHALLENGE | INSUFFICIENT
+      reason  : short prose
+  A CHALLENGE is advisory text for a human. It changes nothing by itself.
+
+Known-answer battery is in test_advisory_battery.py — connect nothing until it
+passes, especially the controls (reversed case, true tie, garbage input).
+"""
+import json, urllib.request, time, os, sys
+
+# 2026-10-08 REPOINT: the default lane is now NVIDIA DIRECT, not free-router.
+# The free-router lane 402s (free_router_exhausted) whenever OpenRouter's free
+# daily quota is out — the advisory then degrades to a failed-transport
+# INSUFFICIENT on exactly the runs it exists to check (observed 2026-10-08
+# dry-run: 422ms INSUFFICIENT, reason 'free_router_exhausted'). The
+# qualification battery ran against NVIDIA direct, and the lane carries the
+# NVIDIA_API_KEY from Hermes's .env. Same env-override pattern as before.
+PORT = os.environ.get("LP_ADVISORY_BASE_URL", "https://integrate.api.nvidia.com/v1")
+# 2026-10-04: repointed OFF space-bunny-alpha for three reasons: the free-router
+# lane returned free_router_exhausted on 2 of the last 3 runs (10-02, 10-04),
+# the stealth preview expires 2026-10-05, and a safety component must not depend
+# on a model scheduled to disappear. Nemotron qualified on the same battery
+# (18/18 on the safety axis; the variance is only CHALLENGE vs INSUFFICIENT,
+# both correct). Advisory remains READ-ONLY either way.
+MODEL = os.environ.get("LP_ADVISORY_MODEL", "nvidia/nemotron-3-ultra-550b-a55b")
+TIMEOUT = int(os.environ.get("LP_ADVISORY_TIMEOUT", "90"))
+
+CORROBORATE = "CORROBORATE"
+CHALLENGE = "CHALLENGE"
+INSUFFICIENT = "INSUFFICIENT"
+VALID = (CORROBORATE, CHALLENGE, INSUFFICIENT)
+
+
+def _nvidia_key():
+    """NVIDIA direct lane needs a Bearer key. Read NVIDIA_API_KEY from the
+    Hermes .env (value is never logged). None means the direct lane cannot
+    authenticate — the caller treats that as transport-unavailable."""
+    try:
+        with open(os.path.expanduser("~/.hermes/.env")) as f:
+            for line in f:
+                if line.startswith("NVIDIA_API_KEY="):
+                    return line.split("=", 1)[1].strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return None
+
+
+def _post(payload):
+    body = json.dumps(payload).encode()
+    headers = {"Content-Type": "application/json"}
+    # 2026-10-08: NVIDIA direct requires auth; free-router was keyless-local.
+    key = _nvidia_key()
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    # 2026-10-08: NVIDIA direct 503s are TRANSIENT capacity (observed and
+    # verified 2026-10-01 and 2026-10-08: an immediate retry clears them).
+    # One retry with backoff before surfacing the failure — an unattended
+    # nightly run must not lose its audit to a single overloaded moment.
+    last_err = None
+    for attempt in range(2):
+        req = urllib.request.Request(
+            f"{PORT}/chat/completions", data=body, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+                return json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            # 429/503 are retryable; a 400/401/404 is a wiring bug — retrying
+            # those just wastes the timeout budget.
+            if e.code in (429, 503) and attempt == 0:
+                last_err = e
+                time.sleep(4)
+                continue
+            raise
+    raise last_err
+
+
+def available() -> bool:
+    """Liveness probe. Advisory failure must never block the deterministic path."""
+    try:
+        req = urllib.request.Request(f"{PORT}/models")
+        with urllib.request.urlopen(req, timeout=10) as r:
+            json.loads(r.read())
+        return True
+    except Exception:
+        return False
+
+
+SYSTEM = """You are an ADJUDICATOR reviewing a deterministic liquidity-position \
+decision. You do not decide. Python computed every number; you only judge whether \
+the stated conclusion follows from the stated evidence.
+
+Answer with EXACTLY three lines and nothing else:
+VERDICT: CORROBORATE | CHALLENGE | INSUFFICIENT
+REASON: one sentence
+
+Rules:
+- CORROBORATE — the conclusion follows from the evidence given.
+- CHALLENGE — the evidence does not support the conclusion, or a specific \
+alternative reading fits better. Say which.
+- INSUFFICIENT — the evidence given is too thin to judge. Name what is missing.
+
+Never produce an amount, a position size, a percentage target, or an executable \
+instruction. You never allocate capital. Judge reasoning only."""
+
+
+def _parse(text: str) -> dict:
+    verdict, reason = INSUFFICIENT, ""
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if line.upper().startswith("VERDICT:"):
+            v = line.split(":", 1)[1].strip().upper().strip(".")
+            if v in VALID:
+                verdict = v
+        elif line.upper().startswith("REASON:"):
+            reason = line.split(":", 1)[1].strip()
+    if verdict == INSUFFICIENT and not reason:
+        reason = (text or "").strip()[:300]
+    return {"verdict": verdict, "reason": reason[:400]}
+
+
+def adjudicate(decision: dict, rec_verdicts: dict) -> dict:
+    """Review one decision artifact. Never raises — returns an error verdict."""
+    t0 = time.time()
+    # 2026-10-02 FIX: this read decision["threshold_analysis"]["multiples"],
+    # but DecisionReport serialises the field as a TOP-LEVEL
+    # "threshold_multiples". Every lookup missed, so the advisory was shown raw
+    # scores with no viability weighting and correctly reported that the
+    # claimed weighting was not present. The advisory was right; the field path
+    # was wrong. Accept both shapes so a schema change cannot silently
+    # reintroduce this.
+    mults = (decision.get("threshold_multiples")
+             or (decision.get("threshold_analysis") or {}).get("multiples")
+             or {})
+    pools = []
+    for pool, v in (decision.get("verdicts") or {}).items():
+        auth = (rec_verdicts.get(pool) or {}).get("fee_apr_pct")
+        entry = {
+            "pool": pool,
+            "action": v.get("action"),
+            "reason": v.get("reason"),
+            # 2026-10-03: authoritative figure LEADS. Nemotron read the
+            # stale `fee_apr_pct` (0.003) and endorsed a zombie exit while the
+            # correct 1.18 sat beside it under a neutral-looking key. A
+            # known-divergent figure must never be presented as a plain one.
+            "fee_apr_pct_authoritative": auth,
+            "fee_apr_pct_divergent_NOT_FOR_USE": v.get("fee_apr_pct"),
+            "reward_token_count": v.get("reward_token_count"),
+        }
+        # ORDER MATTERS (2026-10-02): the viability factor must be computed
+        # BEFORE weighted_score. It was previously computed after, so
+        # entry.get("viability_factor", 1.0) always fell back to 1.0 and the
+        # advisory was shown raw scores while the rationale claimed a
+        # viability-weighted ranking. It correctly reported the mismatch.
+        factor = 1.0
+        if pool in mults:
+            entry["multiple_to_threshold"] = mults[pool]
+            try:
+                import lp_decision as _LD2
+                factor = round(_LD2._viability_factor(
+                    {"computable": True,
+                     "multiple_to_1e6_fee_threshold": mults[pool]}), 4)
+                entry["viability_factor"] = factor
+            except Exception:
+                pass
+        try:
+            import lp_decision as _LD3
+            entry["raw_score"] = round(
+                (v.get("fee_apr_pct") or 0) * _LD3.FEE_APR_SCORE_WEIGHT
+                + (v.get("reward_token_count") or 0) * _LD3.REWARD_TOKEN_SCORE_WEIGHT, 4)
+            entry["weighted_score"] = round(entry["raw_score"] * factor, 4)
+        except Exception:
+            pass
+        pools.append(entry)
+    # 2026-10-02: the first live run produced a CHALLENGE saying the ranking
+    # was unsupported because the combined score and its weights were not in the
+    # payload. That was correct — the artifact did not expose its own basis.
+    # Include the stated formula and each pool's computed score so the ranking
+    # is checkable. Descriptive only: the model must not restate a score as a
+    # capital amount.
+    try:
+        import lp_decision as _LD
+        basis = {
+            "formula": ("raw = fee_apr_pct * fee_apr_weight "
+                        "+ reward_token_count * reward_token_weight; "
+                        "then weighted by a viability factor derived from "
+                        "multiple_to_1e6_fee_threshold (distance to the point "
+                        "where the position starts earning)"),
+            "fee_apr_weight": _LD.FEE_APR_SCORE_WEIGHT,
+            "reward_token_weight": _LD.REWARD_TOKEN_SCORE_WEIGHT,
+            "viability_note": (
+                "A high rate at a large multiple can be a WORSE destination than "
+                "a lower rate already near its threshold, because accrual is "
+                "linear in LP share and the far position may never earn."),
+            "near_threshold_bonus": _LD.NEAR_THRESHOLD_BONUS,
+            "far_threshold_penalty": _LD.FAR_THRESHOLD_PENALTY,
+        }
+        for p in pools:
+            p["combined_score"] = round(
+                (p["fee_apr_pct"] or 0) * basis["fee_apr_weight"]
+                + (p["reward_token_count"] or 0) * basis["reward_token_weight"], 3)
+    except Exception as _exc:
+        # 2026-10-08: the old fallback text GUESSED "lp_decision not
+        # importable" — a misdiagnosis that cost a debugging cycle (the
+        # module imports fine; the real exception was something else
+        # entirely, and the guess sent the advisory a false basis note).
+        # Record the ACTUAL error class and message so the next sidecar
+        # names the true cause. The advisory must see an honest basis
+        # state, and so must we.
+        basis = {"formula": "unavailable",
+                 "note": f"scoring-basis build failed: {type(_exc).__name__}: "
+                         f"{str(_exc)[:200]}"}
+
+    evidence = {
+        "recommended_reallocation": decision.get("recommended_reallocation"),
+        "expand_candidate": decision.get("expand_candidate"),
+        "exit_candidates": decision.get("exit_candidates"),
+        "notes": decision.get("notes"),
+        "scoring_basis": basis,
+        "positions": pools,
+    }
+    user = ("Deterministic decision to adjudicate:\n\n"
+            + json.dumps(evidence, indent=2)
+            + "\n\nIs the stated conclusion supported by this evidence? "
+              "Does the action taken for each pool follow from its reason?")
+
+    try:
+        d = _post({"model": MODEL, "temperature": 0,
+                   # 2026-10-02: raised 600 -> 2000. A live run returned HTTP 502
+                   # with free_router_exhausted / "no useful content or tool call
+                   # (finish_reason=length)" — the budget was consumed before any
+                   # visible answer. Headroom costs nothing on short verdicts.
+                   "max_tokens": 2000,
+                   "messages": [{"role": "system", "content": SYSTEM},
+                                {"role": "user", "content": user}]})
+        msg = d["choices"][0]["message"]
+        parsed = _parse(msg.get("content") or "")
+        parsed["ok"] = True
+        parsed["ms"] = int((time.time() - t0) * 1000)
+        parsed["model"] = MODEL
+        parsed["finish_reason"] = d["choices"][0].get("finish_reason")
+        # Guard: if the model tried to emit an executable quantity, flag it.
+        import re
+        leaked = re.search(r"\$\s?\d|transfer\s+\d|bridge\s+\d", parsed["reason"], re.I)
+        parsed["possible_quantity_leak"] = bool(leaked)
+        return parsed
+    except Exception as e:
+        detail = ""
+        if hasattr(e, "read"):
+            try:
+                detail = (e.read().decode() or "")[:220]
+            except Exception:
+                detail = ""
+        return {"verdict": INSUFFICIENT, "ok": False,
+                "reason": f"advisory unavailable: {type(e).__name__}"
+                          + (f" ({detail})" if detail else ""),
+                "ms": int((time.time() - t0) * 1000), "model": MODEL,
+                "possible_quantity_leak": False}
+
+
+if __name__ == "__main__":
+    print(f"advisory model: {MODEL} via {PORT}")
+    print(f"endpoint reachable: {available()}")

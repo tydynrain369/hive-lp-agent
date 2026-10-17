@@ -154,16 +154,42 @@ def diff_fee_snapshots(before, after):
                 'attributable_fees': None}
     share = Fraction(int(before['share']['num']), int(before['share']['den']))
     precision = after['precision']
-    fees = {}
+    # 2026-09-30 CORRECTION — this was NOT measuring fees.
+    # It took the growth in each side's RESERVE and called it attributable
+    # fees. In a constant-product pool reserves move from trades, arbitrage
+    # and price change as well as from fees, so reserve delta is a NET
+    # reserve movement, not fee income. The proof was in the output: it
+    # reported NEGATIVE fees (CENT:POB our CENT = -1.344331, ALIVE:HEARTBEAT
+    # our ALIVE = -0.007382). A fee can never be negative; the negative leg
+    # was the swap/price movement netting against the positive leg.
+    #
+    # Fee income is only isolated from VOLUME: volume traded x fee rate, and
+    # that is the same basis measure_fee_apr() already uses correctly
+    # (dVol * FEE_RATE * our_share). So rather than invent a second, wrong
+    # estimator, report the reserve movement honestly as what it is, and
+    # leave fee attribution to the volume-based path.
+    volumes_before = before.get('volumes') or {}
+    volumes_after = after.get('volumes') or {}
+    reserve_movement = {}
     for sym, after_amt in after['reserves'].items():
         growth = Fraction(after_amt) - Fraction(before['reserves'][sym])
-        fees[sym] = _fmt_amount(growth * share, precision)
+        reserve_movement[sym] = {
+            'net_reserve_delta': _fmt_amount(growth, precision),
+            'our_share_of_delta': _fmt_amount(growth * share, precision),
+        }
+    fee_basis = 'volume x fee_rate (see measure_fee_apr); reserve deltas are NOT fees'
     return {**out, 'status': 'measured', 'share': before['share'],
             'total_shares': after['total_shares'],
             'reserves_before': before['reserves'],
             'reserves_after': after['reserves'],
-            'attributable_fees': fees,
-            'note': 'reserve-growth attribution; consistent with redemption value'}
+            'volumes_before': volumes_before,
+            'volumes_after': volumes_after,
+            'reserve_movement': reserve_movement,
+            'attributable_fees': None,
+            'fee_basis': fee_basis,
+            'note': ('reserve delta is net of trades, arbitrage and price '
+                     'movement; it cannot be used as fee income. Use the '
+                     'volume-based measurement instead.')}
 
 
 DEFAULT_SNAPSHOT_STORE = os.path.expanduser('~/.hermes/lp_tests/fee_snapshots.jsonl')

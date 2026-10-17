@@ -25,11 +25,151 @@ from dataclasses import dataclass, asdict
 from datetime import datetime
 from typing import Optional
 
+# --- expand-candidate scoring tunables (2026-10-02) -----------------------
+# score = fee_apr_pct * FEE_APR_SCORE_WEIGHT + reward_count * REWARD_TOKEN_SCORE_WEIGHT
+#
+# The reward weight exists because of an explicit decision: a pool with weak
+# trading fees but real reward distributions is reward-productive and must not
+# be discarded. With the default 0.1, twenty reward tokens outweigh a ~0.25%
+# fee-APR advantage, so ALIVE:SWAP.HIVE (20 rewards, 4.869%) currently outranks
+# CENT:POB (1 reward, 5.121%). That is intended, not a bug.
+#
+# This was previously a bare 0.1 literal inside the scoring line, which meant a
+# design decision was invisible and unchangeable without reading the body.
+# Raising FEE_APR_SCORE_WEIGHT makes fee yield dominant; raising
+# REWARD_TOKEN_SCORE_WEIGHT makes reward yield dominant.
+FEE_APR_SCORE_WEIGHT = 1.0
+# Weight on the whole-pool per-tick dividend USD. Set from the live
+# observation that HSBIDAO:LBI pays $0.065/tick against HSBIDAO:PIXYDUST
+# $0.018/tick, so 0.065 * 12 = 0.78 puts dividend on the same scale as a ~0.8%
+# fee APR. Named and tunable for the same reason the fee/reward weights are.
+DIVIDEND_USD_SCORE_WEIGHT = 12.0
+REWARD_TOKEN_SCORE_WEIGHT = 0.1
+
+# --- destination ranking must respect distance-to-threshold (2026-10-02) ---
+# Found by the dust fixture family in tests/test_scale_properties.py: a pool
+# with an excellent RATE won expand_candidate purely on combined score even
+# though it was 40x from clearing the fee threshold, while another pool 0.6x
+# away was ignored. That inverts the stated policy — "a pool can have an
+# excellent rate and still be the wrong target because it is hundreds of
+# multiples from clearing."
+#
+# An expand candidate now receives a penalty proportional to how far it is
+# from clearing, so a near-threshold position is preferred over a
+# better-paying but hopeless one. Set to 0.0 to restore pure rate ranking.
+# --- expand semantics: READING B, adopted 2026-10-02 ---------------------
+# Exactly ONE pool carries the 'expand' action: the single destination the next
+# unit of capital goes to. Runner-up candidates become 'hold' — keep the
+# position, add nothing — with a reason naming the rank, so the artifact still
+# carries the ordering for a human reader.
+#
+# Why single-target rather than 'every viable pool is expand':
+#   * hive-lp-decision-preferences: "recommend concentration toward a clearing
+#     target; do not default to spreading further when the account's positions
+#     are all sub-threshold, and do not treat pool count as diversification
+#     once it is clear every position is inert." Marking every viable pool
+#     'expand' is spreading under another name.
+#   * It makes deployment a SEQUENCE: clear the best target, let it compound,
+#     then promote the runner-up when the first is earning.
+#   * It resolves the advisory layer's only standing CHALLENGE: "labelling
+#     ... as expand conflicts with the single stated expand candidate and is
+#     left unreconciled."
+#
+# Set to False to restore the multi-target behaviour; the tests cover both.
+READING_B_SINGLE_EXPAND = True
+
+# --- dividend bands (2026-10-02) ------------------------------------------
+# Replaces the old MIN_REWARD_TOKENS_FOR_PRODUCTIVE entry-count band. Thresholds
+# are whole-pool per-tick USD, used only for RANKING between pools (our share
+# cancels). Chosen to sit either side of the pools actually observed:
+# HSBIDAO:LBI $0.0650, HSBIDAO:PIXYDUST $0.0180, and pools that pay nothing.
+try:
+    from lp_sizing import MIN_REALISABLE_DIVIDEND_FRACTION
+except Exception:  # noqa: BLE001
+    MIN_REALISABLE_DIVIDEND_FRACTION = 0.5
+
+MIN_REWARD_USD_PER_TICK_FOR_PRODUCTIVE = 0.01
+MIN_REWARD_USD_PER_TICK_EXCLUSIVE = 0.05
+
+NEAR_THRESHOLD_BONUS = 0.6      # bonus multiplier at multiple <= 1.0x
+FAR_THRESHOLD_PENALTY = 0.25    # penalty multiplier at multiple >= 25x
+
 SNAPSHOT_PATH = "/home/tydynrain/.hermes/lp_tests/fee_snapshots.jsonl"
 DECISIONS_DIR = "/home/tydynrain/.hermes/lp_tests/decisions"
 
 # Minimum evidence thresholds (measured, not aspirational)
 MIN_FEE_APR_FOR_PRODUCTIVE = 0.10  # 0.10% pool-side APR from snapshot windows
+
+# --- age-bonus top-up dilution (2026-10-07, PsyopDaily-verified mechanics) --
+# The distribution contract's age bonus (bonusCurve) grows the effective
+# weight of a matured position. A top-up rebases timeFactor on the ENTIRE
+# enlarged position, so the accumulated multiplier is diluted — observed on
+# ALIVE:HEARTBEAT as "2.30x → 2.20x (−4% of effective weight)" for a +10%
+# top-up. An expand candidate carrying an active curve therefore has a
+# hidden cost that a naive score never sees: the next unit of capital is
+# marginally LESS productive than the current one. TOPUP_FRACTION_ASSUMED is
+# the reference top-up the penalty is evaluated at (10% matches the site's
+# displayed figure); the ratio is a multiplier ON the expand score, so
+# TOPUP_DILUTION_WEIGHT = 1.0 applies the full mechanical dilution and
+# 0.0 disables the term entirely (the pre-2026-10-07 behaviour).
+TOPUP_FRACTION_ASSUMED = 0.10
+TOPUP_DILUTION_WEIGHT = 1.0
+
+# --- reward capture per deposited HIVE (2026-10-10, Tydyn's CENT question) --
+# Tydyn asked whether CENT:POB really beats the other CENT pools; the
+# measured answer was NO — CENT:TRIBE pays ~9x more reward per HIVE of pool
+# TVL ($1.80/day on 14,398 HIVE vs $0.026/day on 1,819 HIVE). The expand
+# score then ranked by our held position's threshold distance alone, which
+# is how a 9x-worse destination won. This term scores each candidate by
+# what a NEW HIVE deposited there would capture per day: whole-pool daily
+# reward value / pool TVL. Units: USD-per-day per HIVE-deposited, scaled to
+# sit beside the fee-APR term (a HIVE deposited at X% fee APR earns
+# X/100 * HIVE_USD per day, so reward-per-hive * REWARD_PER_HIVE_WEIGHT
+# must be normalized accordingly). Named tunable per the standing rule:
+# 0 disables the term (pre-2026-10-10 behaviour).
+REWARD_PER_HIVE_WEIGHT = 1.0
+HIVE_USD_ASSUMED = 0.057
+
+# --- reward runway + exit liquidity (2026-10-07, PsyopDaily-verified) -------
+# A pool whose reward batches run out in under REWARD_RUNWAY_MIN_DAYS should
+# not win an expansion that pays for itself over months — the site flags under
+# 14 days as 'rewards end soon'; we use the same threshold on the destination
+# side. EXIT_LIQUIDITY_FLOOR_HIVE: a pool whose token cannot be exited (total
+# bid-book + pool depth under the floor) is never a destination for NEW
+# capital; a HELD position in one is impaired, not exit-forced — the position
+# is already there and the hazard is realisation, not accrual.
+REWARD_RUNWAY_MIN_DAYS = 14.0
+EXIT_LIQUIDITY_FLOOR_HIVE = 0.5
+
+
+def _topup_dilution_factor(rd_entries):
+    """Pool-level top-up dilution ratio for expand scoring, or None.
+
+    Reads the age-bonus fields discover_rewards attaches per entry
+    (bonus_curve, our_time_factor_ms, tick_hours) and returns the
+    topup_dilution ratio at TOPUP_FRACTION_ASSUMED. None when the entry
+    carries no curve/age data (older callers, mining rewards) — the caller
+    treats None as 'no penalty', matching the pre-2026-10-07 behaviour, and
+    records why on the verdict.
+    """
+    for r in (rd_entries or []):
+        if not isinstance(r, dict):
+            continue
+        curve = r.get("bonus_curve")
+        tf_ms = r.get("our_time_factor_ms")
+        tick_h = r.get("tick_hours")
+        if not curve or not tf_ms or not tick_h:
+            continue
+        try:
+            age_h = (datetime.now().timestamp() * 1000.0 - float(tf_ms)) / 3600000.0
+            age_periods = age_h / float(tick_h)
+            from lp_dividends import topup_dilution
+            d = topup_dilution(age_periods, curve, TOPUP_FRACTION_ASSUMED)
+            if d.get("active_curve"):
+                return d
+        except (TypeError, ValueError):
+            continue
+    return None
 MIN_REWARD_TOKENS_FOR_PRODUCTIVE = 1
 
 
@@ -42,6 +182,18 @@ class PoolDecision:
     reward_token_count: int
     evidence_window_hours: float
     snapshot_count: int
+    dividend_usd_per_tick: Optional[float] = None   # whole pool GROSS
+    dividend_status: str = "unknown"
+    distinct_reward_tokens: int = 0
+    dividend_realisable_usd: Optional[float] = None  # what we could actually keep
+    dividend_realisable_fraction: Optional[float] = None
+    # 2026-10-07: age-bonus state for this pool's expand score.
+    expand_score: Optional[float] = None      # the score that was compared
+    topup_dilution_ratio: Optional[float] = None   # multiplier on a +10% top-up
+    topup_dilution_note: Optional[str] = None
+    # 2026-10-07: destination-safety gates (PsyopDaily-verified mechanics).
+    reward_days_remaining: Optional[float] = None  # runway from active batches
+    expand_blocked_reason: Optional[str] = None    # why it cannot be a destination
 
 
 @dataclass
@@ -50,6 +202,7 @@ class DecisionReport:
     held_pools: list
     verdicts: dict            # pool -> PoolDecision
     exit_candidates: list     # ordered list of pool names to exit
+    threshold_multiples: dict # pool -> multiple to the 1e-6 fee threshold
     expand_candidate: Optional[str]   # highest-scoring productive pool
     recommended_reallocation: Optional[dict]   # {from_pool, to_pool, rationale}
     notes: list
@@ -107,18 +260,54 @@ def load_fee_evidence(snapshot_path: str = SNAPSHOT_PATH) -> dict:
         dt_h_total = (snapshots[-1]["at_ms"] - snapshots[0]["at_ms"]) / 3_600_000.0
         reserves = snapshots[-1].get("reserves") or {}
         base_token = pool.split(":")[0]
+        quote_token = pool.split(":")[1] if ":" in pool else None
         base_liq = float(reserves.get(base_token) or 0)
-        if mean_delta_per_interval <= 0 or base_liq <= 0 or median_dt_h <= 0:
+        quote_liq = float(reserves.get(quote_token) or 0) if quote_token else 0.0
+        # 2026-10-01 — ATTEMPTED FIX REVERTED, and the reason is recorded here
+        # deliberately so nobody repeats it.
+        #
+        # First attempt added a factor of 2 ("true TVL in the base token is
+        # 2*res_base because x*y=k") and summed both reserves. That made the
+        # disagreement WORSE (5.9x -> 16.7x on CENT:POB, 24x -> 437x on
+        # ALIVE:HEARTBEAT). The reasoning was wrong on two counts:
+        #   (1) (res_b + res_q) already counts both sides; multiplying by 2
+        #       double-counts.
+        #   (2) In a constant-product pool the two reserves are NOT equal —
+        #       the ratio is the token price and it moves. So "each side holds
+        #       half the value" is false except at the exact midpoint.
+        #
+        # The real, remaining cause is a UNIT mismatch, not a factor:
+        # this function measures BASE-token volume over a SUM of two
+        # reserves in two different tokens. baseVolume and quoteVolume are
+        # different units and must be valued separately before being summed.
+        # That is exactly what lp_recommendation.measure_fee_apr() does using
+        # pe.token_prices (it values each side's fee and divides by our tvl,
+        # and our share cancels). This function has no price map, so it cannot
+        # produce a comparable figure as written.
+        #
+        # Rather than keep a second, known-divergent APR in the decision path,
+        # the fee evidence here now carries the raw volume + TVL inputs and an
+        # explicit note, and the decision layer is expected to consume the
+        # recommendation layer's APR. Keeping two independent APRs is precisely
+        # the drift that produced 5.9x-24.3x disagreement in the first place.
+        tvl_value = (base_liq + quote_liq)
+        if mean_delta_per_interval <= 0 or tvl_value <= 0 or median_dt_h <= 0:
             fee_apr = 0.0
         else:
-            # Extrapolate: avg (winsorized) per-interval volume → annualized APR
             fee_apr = round(
-                (mean_delta_per_interval * 0.0025 / base_liq) * (8760.0 / median_dt_h) * 100.0, 3
+                (mean_delta_per_interval * 0.0025 / tvl_value) * (8760.0 / median_dt_h) * 100.0, 3
             )
         # Tail signal: track the max single-interval delta so we can see bursts
         max_delta = max(d for d, _ in deltas)
         typical = sorted_d[len(sorted_d) // 2]  # raw median for comparison
         windows[pool] = {
+            # NOT authoritative. This figure divides BASE-token volume by a
+            # SUM of two reserves in two different tokens, so it is a unit
+            # mismatch and disagrees with lp_recommendation.measure_fee_apr()
+            # by 5.9x-24.3x. It is retained only because decide() needs a
+            # fallback when no recommendation is supplied. The decision path
+            # should pass the recommendation layer's APR instead.
+            "fee_apr_pct_local_uncalibrated": fee_apr,
             "fee_apr_pct": fee_apr,
             "evidence_window_hours": round(dt_h_total, 2),
             "snapshot_count": len(snapshots),
@@ -132,48 +321,448 @@ def load_fee_evidence(snapshot_path: str = SNAPSHOT_PATH) -> dict:
     return windows
 
 
-def decide(held_pools: list, reward_info: dict, fee_evidence: Optional[dict] = None) -> DecisionReport:
+# 2026-09-30: dust awareness. Tydyn's strategy is to CONCENTRATE in one or two
+# pools until a position clears that pool's earn threshold, then use the yield
+# to grow others — thresholds differ per pool by total liquidity. Without this,
+# every position reads "hold" forever and the agent never considers
+# consolidation, which is the opposite of the intended plan.
+DUST_VALUE_USD = 0.000001     # below this a position earns nothing visible
+# A position needing more than this multiple to reach the threshold is not a
+# viable growth target at our current size; consolidating elsewhere is better.
+UNVIABLE_GROWTH_MULTIPLE = 50.0
+
+
+def dust_verdict(threshold: Optional[dict], position_value_usd: float,
+                 pool_fee_apr: float) -> tuple:
+    """Return (action, reason) factoring in how far a position is from earning.
+
+    Never invents a multiple: with no measured fee evidence it says so and
+    leaves the action alone rather than guessing.
+    """
+    if threshold is None or not threshold.get("computable"):
+        return None, None
+    if threshold.get("already_above_threshold"):
+        return "hold", "fees already positive; position is earning"
+    mult = threshold.get("multiple_to_1e6_fee_threshold")
+    if mult is None:
+        return None, None
+    if mult > UNVIABLE_GROWTH_MULTIPLE:
+        return ("consolidate",
+                f"needs {mult}x capital to earn anything (>{UNVIABLE_GROWTH_MULTIPLE:.0f}x); "
+                f"pool APR {pool_fee_apr}% is too low to be worth concentrating here — "
+                f"release this liquidity to a more productive pool")
+    return ("expand",
+            f"only {mult}x from earning; pool APR {pool_fee_apr}% is a viable "
+            f"concentration candidate (ranked against other candidates below)")
+
+
+def _viability_factor(threshold: Optional[dict]) -> float:
+    """Multiplier on the expand score reflecting distance-to-threshold.
+
+    Accrual is linear in LP share, so the multiple IS the proportionality: a
+    position N multiples from clearing needs N times the capital before it
+    earns anything visible. A high rate at 40x is worth less to us than a
+    lower rate at 0.6x, because the first may never earn at all.
+
+    Returns 1.0 when no multiple is computable — never invents one.
+    """
+    if not threshold or not threshold.get("computable"):
+        return 1.0
+    if threshold.get("already_above_threshold"):
+        return NEAR_THRESHOLD_BONUS + 1.0     # already earning: strong preference
+    mult = threshold.get("multiple_to_1e6_fee_threshold")
+    if mult is None:
+        return 1.0
+    if mult <= 1.0:
+        return NEAR_THRESHOLD_BONUS + 1.0
+    if mult >= 25.0:
+        return FAR_THRESHOLD_PENALTY
+    # Log-ish taper between the two bands.
+    import math
+    frac = (math.log(mult) - math.log(1.0)) / (math.log(25.0) - math.log(1.0))
+    frac = max(0.0, min(1.0, frac))
+    hi = NEAR_THRESHOLD_BONUS + 1.0
+    return hi + (FAR_THRESHOLD_PENALTY - hi) * frac
+
+
+def decide(held_pools: list, reward_info: dict, fee_evidence: Optional[dict] = None,
+           position_economics: Optional[dict] = None,
+           threshold_analysis: Optional[dict] = None,
+           fee_evidence_override: Optional[dict] = None,
+           price_map: Optional[dict] = None,
+           spread_map: Optional[dict] = None,
+           exit_liquidity_map: Optional[dict] = None,
+           pool_tvl_map: Optional[dict] = None) -> DecisionReport:
     """
     held_pools: list of pool_pair strings (from portfolio.positions.keys())
     reward_info: dict from cron_lp_agent.discover_rewards()
     fee_evidence: output of load_fee_evidence() (optional; will be loaded if not provided)
+    exit_liquidity_map: {symbol: total exit liquidity in HIVE or None} from
+        PriceEngine.exit_liquidity() (2026-10-07, PsyopDaily-verified safety
+        mechanic). Expansion requires BOTH pair tokens above
+        EXIT_LIQUIDITY_FLOOR_HIVE; unknown depth does not gate (never zero).
     """
     if fee_evidence is None:
         fee_evidence = load_fee_evidence()
 
+    # 2026-10-05: pool lifecycle + operator/self-issued token filter.
+    # A pool that has reached EOL or whose token is operator-issued/self-issued
+    # or has no Hive-Engine market must not be considered for expansion.
+    # Lazily construct here so callers need only import decide(), not a filter object.
+    lifecycle_filter = None
+    lifecycle_notes = []
+    try:
+        from lp_lifecycle import PoolLifecycleFilter
+        lifecycle_filter = PoolLifecycleFilter()
+    except ImportError:
+        pass  # filter unavailable; fall through unfiltered (legacy behaviour)
+    # 2026-10-01: the recommendation layer's valuation-based APR wins over the
+    # local uncalibrated one, so expand/consolidate thresholds are applied to a
+    # single, consistent figure.
+    if fee_evidence_override:
+        merged = dict(fee_evidence or {})
+        for pool, over in fee_evidence_override.items():
+            base = dict(merged.get(pool) or {})
+            base.update(over)
+            merged[pool] = base
+        fee_evidence = merged
+
     verdicts = {}
     exit_candidates = []
+    release_candidates = []
+    unpriced_fee_pools = []
+    notes_unpriced = []
     expand_candidate = None
     expand_score = -1.0
 
     for pool in held_pools:
         fee_info = fee_evidence.get(pool) or {}
         fee_apr = fee_info.get("fee_apr_pct", 0.0)
-        reward_tokens = []
-        # reward_info for a pool is typically a list of reward dicts
+        # 2026-10-01: single source of truth for APR.
+        # When the caller supplies the recommendation layer's valuation-based
+        # APR, it OVERRIDES the local uncalibrated figure above. The local one
+        # divides base-token volume by a sum of two reserves (a unit mismatch)
+        # and disagreed with the recommendation layer by 5.9x-24.3x, which
+        # meant expand/consolidate thresholds were being applied to the wrong
+        # quantity. One APR, computed one way, from a price map.
+        if fee_evidence.get(pool, {}).get("fee_apr_pct_authoritative") is not None:
+            fee_apr = fee_evidence[pool]["fee_apr_pct_authoritative"]
+        else:
+            # 2026-10-02 HARDENING: refuse to act on the known-divergent fallback.
+            # The audit measured it 7.2x-393.3x too low against the authoritative
+            # figure (ALIVE:HEARTBEAT: 0.003% vs 1.18%), which classified a
+            # productive pool as a zombie. Silently using it is how a threshold
+            # gets applied to the wrong quantity. Without the authoritative APR
+            # we treat fee yield as UNKNOWN rather than low, so the pool cannot
+            # be exited on a number we know is wrong. Reward-based signals and
+            # dust/threshold logic still apply.
+            apr_source = "fallback(divergent)"
+            unpriced_fee_pools.append(pool)
+            notes_unpriced.append(
+                f"{pool}: no authoritative APR supplied — fee yield UNKNOWN, "
+                f"not treated as zero; fallback figure ({fee_apr}%) is known to be "
+                f"7x-393x too low and was not used to drive this verdict")
+        # 2026-10-02: the reward metric is now USD VALUE, not an entry COUNT.
+        #
+        # The old code read r["token"]/r["symbol"], but discover_rewards()
+        # emits "mined_token", so every symbol came back "?" and the "count" was
+        # really the number of ENTRIES. That cannot distinguish HSBIDAO:LBI
+        # paying $0.065/tick in two tokens from HSBIDAO:PIXYDUST paying
+        # $0.018/tick across thirteen, nor THREE's 1.35e9 headline units from
+        # their $0.00204 of actual value.
+        #
+        # dividend_usd is the WHOLE-POOL per-tick value. It is used for
+        # RANKING only — relative comparison between pools, where our share
+        # cancels. Our own dividend is reported separately by lp_sizing.
         rd = reward_info.get(pool) or []
+        reward_tokens = []
         if isinstance(rd, list):
-            reward_tokens = [r.get("token", r.get("symbol", "?")) for r in rd if isinstance(r, dict)]
-        reward_count = len(reward_tokens)
+            reward_tokens = [r.get("mined_token") or r.get("token") or r.get("symbol")
+                             for r in rd if isinstance(r, dict)
+                             and (r.get("mined_token") or r.get("token") or r.get("symbol"))]
+        reward_count = len(set(reward_tokens))
+
+        dividend_usd = None
+        dividend_status = "unknown"
+        try:
+            from lp_sizing import reward_value_per_tick
+            _pv = (fee_evidence_override or {}).get(pool, {}).get("price_map") \
+                  or (position_economics or {}).get(pool, {}).get("price_map") \
+                  or price_map
+            if _pv:
+                _v = reward_value_per_tick(rd, _pv)
+                if _v["comparable"]:
+                    dividend_usd = _v["usd_per_tick_whole_pool"]
+                    dividend_status = "valued"
+                else:
+                    dividend_status = "unpriced-token:" + ",".join(_v["unpriced_tokens"][:3])
+            else:
+                dividend_status = "no price map"
+        except Exception as _e:
+            dividend_status = f"unavailable:{type(_e).__name__}"
+
+        # 2026-10-02: a dividend paid in tokens you cannot sell is not income.
+        # Tydyn: "Healthy tokens have a narrow difference between buy and sell
+        # orders, while those that are not doing well tend to have very divergent
+        # buy and sell orders." So a pool whose dividend is mostly unsellable
+        # must stop scoring as dividend-productive, however large the gross.
+        realisable_usd = None
+        realisable_fraction = None
+        dividend_counts = False
+        if dividend_usd is not None and spread_map is not None:
+            try:
+                from lp_sizing import realisable_dividend
+                _split = realisable_dividend(_v["per_token"], spread_map)
+                realisable_usd = _split["realisable_usd"]
+                realisable_fraction = _split["realisable_fraction"]
+                dividend_counts = (realisable_fraction is not None
+                                   and realisable_fraction
+                                   >= MIN_REALISABLE_DIVIDEND_FRACTION)
+            except Exception as _e:
+                dividend_status = f"split-unavailable:{type(_e).__name__}"
+        elif dividend_usd is not None:
+            # No spread data: we cannot claim the dividend is realisable.
+            dividend_counts = False
+
+        # reward_count is retained ONLY as a presence signal (does this pool pay
+        # anything at all). It never enters the score.
+        pays_something = reward_count > 0
+
+        # 2026-10-10: reward capture per deposited HIVE (Tydyn's CENT
+        # question). dividend_usd is the WHOLE-POOL per-tick USD value, and
+        # the distribution contract's tick length is GLOBAL (params.
+        # distTickHours=24, verified on-chain 2026-10-10; batch rows carry no
+        # per-batch tick fields), so per-tick IS per-day for every live
+        # batch. reward_per_hive = what one newly deposited HIVE captures
+        # per day = dividend_usd / tvl_hive. None when either input is
+        # unknown — the term then contributes nothing, never a fabricated
+        # zero (a missing TVL is not a small TVL).
+        _reward_per_hive = None
+        if dividend_usd is not None and pool_tvl_map is not None:
+            _tvl = pool_tvl_map.get(pool)
+            if _tvl is not None and _tvl > 0:
+                _reward_per_hive = dividend_usd / _tvl
+
+        # 2026-10-07: age-bonus top-up dilution for this pool (PsyopDaily
+        # mechanics, browser-verified). Computed once per pool; None means no
+        # active curve data — no penalty, pre-2026-10-07 behaviour.
+        _dil = _topup_dilution_factor(rd)
+        if _dil is not None:
+            _dil_blend = (_dil["ratio"] * TOPUP_DILUTION_WEIGHT
+                          + (1.0 - TOPUP_DILUTION_WEIGHT))
+            _dil_note = (f"+{TOPUP_FRACTION_ASSUMED:.0%} top-up dilutes the age bonus "
+                         f"{_dil['old_mult']:.2f}x → {_dil['new_mult']:.2f}x "
+                         f"(score ×{_dil_blend:.3f})")
+        else:
+            _dil_blend = 1.0
+            _dil_note = None
+
+        # 2026-10-07: REWARD RUNWAY — a destination whose reward batches expire
+        # in under REWARD_RUNWAY_MIN_DAYS must not win expansion (PsyopDaily's
+        # 'rewards end soon' flag, applied on the destination side). Reads the
+        # days_remaining field discover_rewards now emits (numTicksLeft × tick
+        # hours). None/missing = unknown → does not gate.
+        _runway_note = None
+        # 2026-10-08 FIX (multi-batch): take the MAX runway across live
+        # batches, not the min — with accumulation a pool can carry one
+        # short-runway batch alongside a long one, and the pool still pays
+        # through the long batch. MIN would block a still-paying pool.
+        _days_left = max((d for d in
+                          (r.get("days_remaining") for r in (rd or [])
+                           if isinstance(r, dict) and r.get("days_remaining") is not None)
+                          if d is not None), default=None)
+        if _days_left is not None and _days_left < REWARD_RUNWAY_MIN_DAYS:
+            _expand_blocked_runway = True
+            _runway_note = (f"reward batches expire in {_days_left:.0f} days "
+                            f"(< {REWARD_RUNWAY_MIN_DAYS:.0f}d runway floor)")
+        else:
+            _expand_blocked_runway = False
+
+        # 2026-10-07: EXIT LIQUIDITY — a pool whose token has no exit (total
+        # bid-book + counter-side pool depth under the floor, PsyopDaily's
+        # 'unsafe' metric, verified: WIT 0.2432 HIVE bids, REVX 0.2656 HIVE
+        # pool-side) is never a destination for NEW capital. Both pair tokens
+        # checked — a hazard riding on either side blocks (the pair-rule).
+        # Unknown depth does NOT gate: a failed probe is not an empty book,
+        # and folding unknown to zero would invert the gate's safety.
+        _exit_note = None
+        _expand_blocked_exit = False
+        if exit_liquidity_map is not None:
+            _toks = pool.split(":", 1)
+            if len(_toks) == 2:
+                _below = [t for t in _toks
+                          if (exit_liquidity_map.get(t) is not None
+                              and exit_liquidity_map[t] < EXIT_LIQUIDITY_FLOOR_HIVE)]
+                if _below:
+                    _expand_blocked_exit = True
+                    _exit_note = (
+                        f"token(s) {', '.join(_below)} total exit liquidity under "
+                        f"{EXIT_LIQUIDITY_FLOOR_HIVE} HIVE (bid book + pool depth) — "
+                        f"no credible exit for new capital")
+
+        # 2026-09-30: dust/threshold check runs FIRST and can override the
+        # default "hold". A position earning nothing visible should be told to
+        # expand or consolidate, not held indefinitely. It is skipped when the
+        # evidence does not support a multiple, so it can never invent one.
+        dust_action = dust_reason = None
+        if threshold_analysis is not None and position_economics is not None:
+            th = threshold_analysis.get(pool)
+            eco = position_economics.get(pool) or {}
+            dust_action, dust_reason = dust_verdict(
+                th, eco.get("our_position_value_usd", 0.0), fee_apr)
+
+        # 2026-10-05: pool lifecycle + operator/self-issued token filter.
+        # A pool that has reached EOL or whose token is operator-issued/self-issued
+        # or has no Hive-Engine market must not be considered for expansion.
+        # 2026-10-05 FIX: check BOTH tokens of the pair, not just the first.
+        # SWAP.HIVE:SWAP.MATIC slipped through because the compromised token
+        # was the QUOTE side — pool.split(":")[0] only ever saw SWAP.HIVE.
+        # Every token in a pair must pass the filter or the whole pool is out.
+        # 2026-10-05 SEMANTICS FIX: a HELD pool that fails the filter must NOT
+        # vanish from the report. decide() runs over HELD positions, so a
+        # "filtered" verdict here means the operator owns exposure to an
+        # impaired asset — silence hides a live-money fact (heartbeatonhive
+        # held SWAP.HIVE:SWAP.MATIC and the first fix made it disappear).
+        # Compromised backing and EOL projects are unambiguous impairments:
+        # emit a loud EXIT verdict and let the reallocation logic use the
+        # pool as a release source. This MUST precede the dust check's
+        # application — dust_verdict can say "expand" for a tiny position
+        # with a big on-chain APR, and an impairment override must win.
+        # Self-issued/unlisted/avoid keep the proven silence: those are
+        # operator-known holdings and no account currently holds such pools.
+        if lifecycle_filter is not None:
+            lifecycle_ok = True
+            for _tok in [t for t in pool.split(":") if t]:
+                lifecycle_ok, lifecycle_reason = lifecycle_filter.is_dividend_eligible(
+                    _tok, pool)
+                if not lifecycle_ok:
+                    break
+            if not lifecycle_ok:
+                if ("COMPROMISED" in lifecycle_reason
+                        or "end-of-life" in lifecycle_reason):
+                    verdicts[pool] = PoolDecision(
+                        pool=pool,
+                        action="exit",
+                        reason=(f"{lifecycle_reason} — held position in an "
+                                f"impaired pool: EXIT regardless of on-chain "
+                                f"APR (chain numbers no longer reflect "
+                                f"realisable value)"),
+                        fee_apr_pct=fee_apr,
+                        reward_token_count=reward_count,
+                        evidence_window_hours=fee_info.get("evidence_window_hours", 0.0),
+                        snapshot_count=fee_info.get("snapshot_count", 0),
+                        dividend_usd_per_tick=dividend_usd,
+                        dividend_status=dividend_status,
+                        distinct_reward_tokens=reward_count,
+                        dividend_realisable_usd=realisable_usd,
+                        dividend_realisable_fraction=realisable_fraction,
+                    )
+                    exit_candidates.append(pool)
+                    lifecycle_notes.append(
+                        f"{pool}: HELD position → EXIT — {lifecycle_reason}")
+                else:
+                    lifecycle_notes.append(f"{pool}: filtered from consideration — {lifecycle_reason}")
+                continue
 
         # classification
-        if fee_apr < 0.01 and reward_count == 0:
+        score = None  # expand-candidate score; stays None on non-destination paths
+        if dust_action:
+            action = dust_action
+            reason = dust_reason
+            # 2026-10-02 FIX: a dust-verdict "expand" must still register as a
+            # capital destination. Previously this branch short-circuited the
+            # elif chain below, so expand_candidate was only ever assigned at
+            # the fee/reward branches. Result: pools were told to "expand" while
+            # expand_candidate stayed None, so recommended_reallocation could
+            # never be produced and the agent concluded "near-optimal" even
+            # while another pool was marked consolidate with the reason
+            # "release this liquidity to a more productive pool". Register it
+            # here, scored the same way the other branches score.
+            if action == "expand":
+                score = (fee_apr * FEE_APR_SCORE_WEIGHT
+                         + reward_count * REWARD_TOKEN_SCORE_WEIGHT)
+                # 2026-10-10: reward-per-HIVE term in the DUST-EXPAND branch
+                # too — this is the branch that actually fires in production
+                # (dust positions concentrating to clear thresholds; the
+                # CENT:POB 0.4x verdict came from here), so the term must
+                # differentiate dust candidates by reward richness or it
+                # would be dead code in the real scenario. Same normalization
+                # as the fee+dividend site; None contributes nothing.
+                if _reward_per_hive is not None and REWARD_PER_HIVE_WEIGHT > 0:
+                    _rph_apr_equiv = (_reward_per_hive / HIVE_USD_ASSUMED) * 100.0
+                    score += (_rph_apr_equiv * REWARD_PER_HIVE_WEIGHT
+                              * FEE_APR_SCORE_WEIGHT)
+                score *= _viability_factor(th)
+                # 2026-10-07: age-bonus dilution — a top-up into this pool
+                # costs part of its accumulated multiplier.
+                score *= _dil_blend
+                if _expand_blocked_runway or _expand_blocked_exit:
+                    reason += (" — BLOCKED as expansion target: "
+                               + "; ".join(n for n in (_runway_note, _exit_note) if n))
+                elif score > expand_score:
+                    expand_score = score
+                    expand_candidate = pool
+        elif fee_apr < 0.01 and not pays_something:
             action = "exit"
             reason = "no measurable fees AND no active reward distributions"
-        elif fee_apr >= MIN_FEE_APR_FOR_PRODUCTIVE and reward_count >= MIN_REWARD_TOKENS_FOR_PRODUCTIVE:
+        elif fee_apr >= MIN_FEE_APR_FOR_PRODUCTIVE and dividend_counts \
+                and realisable_usd is not None \
+                and realisable_usd >= MIN_REWARD_USD_PER_TICK_FOR_PRODUCTIVE:
             action = "hold" if fee_apr >= 0.5 else "consolidate"
-            reason = f"fee APR {fee_apr}% + {reward_count} reward tokens"
-            score = fee_apr * 1.0 + reward_count * 0.1
-            if score > expand_score:
+            reason = (f"fee APR {fee_apr}% + ${realisable_usd:.6f}/tick "
+                      f"REALISABLE dividend "
+                      f"(${dividend_usd:.6f} gross, "
+                      f"{realisable_fraction:.0%} sellable, "
+                      f"{reward_count} distinct tokens)")
+            score = (fee_apr * FEE_APR_SCORE_WEIGHT
+                     + realisable_usd * DIVIDEND_USD_SCORE_WEIGHT)
+            # 2026-10-10: reward-per-HIVE term — normalized to fee-APR
+            # points so it sits beside the fee term in the same units (a
+            # HIVE at X% APR earns X/100*HIVE_USD/day; reward_per_hive is
+            # USD/day/HIVE, so its APR-equivalent is rph/HIVE_USD*100).
+            # None (no TVL or unpriced rewards) contributes zero — the
+            # pre-2026-10-10 score — never a fabricated number.
+            if _reward_per_hive is not None and REWARD_PER_HIVE_WEIGHT > 0:
+                _rph_apr_equiv = (_reward_per_hive / HIVE_USD_ASSUMED) * 100.0
+                score += (_rph_apr_equiv * REWARD_PER_HIVE_WEIGHT
+                          * FEE_APR_SCORE_WEIGHT)
+            score *= _viability_factor(th)
+            score *= _dil_blend
+            if _expand_blocked_runway or _expand_blocked_exit:
+                reason += (" — BLOCKED as expansion target: "
+                           + "; ".join(n for n in (_runway_note, _exit_note) if n))
+            elif score > expand_score:
                 expand_score = score
                 expand_candidate = pool
-        elif reward_count >= 3:
+        elif dividend_counts and realisable_usd is not None \
+                and realisable_usd >= MIN_REWARD_USD_PER_TICK_FOR_PRODUCTIVE:
             action = "hold"
-            reason = f"reward-only productive: {reward_count} reward tokens"
+            reason = (f"reward-only productive: ${realisable_usd:.6f}/tick "
+                      f"REALISABLE dividend (${dividend_usd:.6f} gross, "
+                      f"{realisable_fraction:.0%} sellable) with no meaningful fees")
+            score = realisable_usd * DIVIDEND_USD_SCORE_WEIGHT
+            score *= _dil_blend
+            if _expand_blocked_runway or _expand_blocked_exit:
+                reason += (" — BLOCKED as expansion target: "
+                           + "; ".join(n for n in (_runway_note, _exit_note) if n))
+            elif score > expand_score:
+                expand_score = score
+                expand_candidate = pool
         elif fee_apr >= MIN_FEE_APR_FOR_PRODUCTIVE:
             action = "hold"
             reason = f"fee-only productive: APR {fee_apr}%"
-            if fee_apr > expand_score:
+            # Pre-existing behaviour retained (2026-10-07): this branch compares
+            # the raw APR against composite scores, and the dilution blend is
+            # deliberately NOT applied — this pool's dividend did not qualify
+            # for the score, so penalising it for diluting that same dividend
+            # would double-count a term the score never included.
+            score = fee_apr  # the quantity this branch compares on
+            # 2026-10-07: destination gates still apply — a fee-only winner is
+            # as much a capital destination as any other.
+            if _expand_blocked_runway or _expand_blocked_exit:
+                reason += (" — BLOCKED as expansion target: "
+                           + "; ".join(n for n in (_runway_note, _exit_note) if n))
+            elif fee_apr > expand_score:
                 expand_score = fee_apr
                 expand_candidate = pool
         else:
@@ -182,6 +771,14 @@ def decide(held_pools: list, reward_info: dict, fee_evidence: Optional[dict] = N
 
         if action == "exit":
             exit_candidates.append(pool)
+        elif action == "consolidate":
+            # 2026-10-02 FIX: a "consolidate" verdict is an instruction to
+            # RELEASE this liquidity — its own reason text says so. But only
+            # "exit" verdicts were collected as sources, so a portfolio could
+            # be told to release capital and simultaneously report no
+            # reallocation. Track release candidates separately; true zombies
+            # still take priority as the primary source below.
+            release_candidates.append(pool)
 
         verdicts[pool] = PoolDecision(
             pool=pool,
@@ -191,23 +788,80 @@ def decide(held_pools: list, reward_info: dict, fee_evidence: Optional[dict] = N
             reward_token_count=reward_count,
             evidence_window_hours=fee_info.get("evidence_window_hours", 0.0),
             snapshot_count=fee_info.get("snapshot_count", 0),
-        )
+            dividend_usd_per_tick=dividend_usd,
+            dividend_status=dividend_status,
+            distinct_reward_tokens=reward_count,
+            dividend_realisable_usd=realisable_usd,
+            dividend_realisable_fraction=realisable_fraction,
+            expand_score=score if action in ("expand", "hold", "consolidate") else None,
+            topup_dilution_ratio=_dil["ratio"] if _dil is not None else None,
+            topup_dilution_note=_dil_note,
+            reward_days_remaining=_days_left,
+            expand_blocked_reason=(_exit_note or _runway_note)
+            if (_expand_blocked_exit or _expand_blocked_runway) else None,
+            )
+
+    # --- READING B: demote runner-up 'expand' pools to 'hold' ---------------
+    # Done after scoring so the ranking that chose the winner is preserved,
+    # and the demoted pool's reason states its rank rather than losing it.
+    if READING_B_SINGLE_EXPAND and expand_candidate:
+        # 2026-10-07 FIX: rank by the SAME stored composite score that
+        # picked the winner (now including the dividend term and the
+        # top-up dilution blend). The previous inline recomputation dropped
+        # the dividend term, so the demotion order could disagree with the
+        # scoring that chose the winner — despite the comment claiming the
+        # ranking was preserved.
+        ranked = sorted(
+            (p for p, v in verdicts.items() if v.action == "expand"),
+            key=lambda p: -(verdicts[p].expand_score or 0.0))
+        for idx, pool in enumerate(ranked):
+            if pool == expand_candidate or idx == 0:
+                continue
+            verdicts[pool].action = "hold"
+            verdicts[pool].reason += (
+                f" — NOT the target: {expand_candidate} ranks higher, so this is a "
+                f"secondary candidate (rank {idx + 1}); hold the position and add "
+                f"no capital here until the target clears its threshold")
 
     recommended = None
-    if exit_candidates and expand_candidate:
+    # 2026-10-02 FIX: a true zombie ("exit") is the preferred source, but a
+    # "consolidate" verdict is also an explicit release instruction and must be
+    # actionable. Previously reallocation required exit_candidates, so any
+    # portfolio with only a consolidate verdict produced no recommendation.
+    # Never name the same pool as both source and destination.
+    source_pool = None
+    if exit_candidates and exit_candidates[0] != expand_candidate:
+        source_pool = exit_candidates[0]
+    elif release_candidates:
+        for c in release_candidates:
+            if c != expand_candidate:
+                source_pool = c
+                break
+    if source_pool and expand_candidate:
+        kind = "exit zombie" if source_pool in exit_candidates else "consolidate"
         recommended = {
-            "from_pool": exit_candidates[0],
+            "from_pool": source_pool,
             "to_pool": expand_candidate,
-            "rationale": f"exit zombie {exit_candidates[0]} and redeploy to {expand_candidate} "
-                         f"(highest combined fee+reward score)",
+            "rationale": f"release liquidity from {kind} {source_pool} and redeploy to "
+                         f"{expand_candidate} (highest viability-weighted score: fee APR "
+                         f"and reward count, weighted by distance to the point where the "
+                         f"position starts earning)",
         }
 
-    notes = []
+    notes = list(notes_unpriced)
+    if lifecycle_notes:
+        notes.append(f"filtered (lifecycle/token): {', '.join(lifecycle_notes)}")
     if exit_candidates:
         notes.append(f"exit candidates: {', '.join(exit_candidates)}")
+    if release_candidates:
+        notes.append(f"release (consolidate) candidates: {', '.join(release_candidates)}")
     if expand_candidate:
         notes.append(f"expand candidate: {expand_candidate}")
-    if not exit_candidates and not expand_candidate:
+    # 2026-10-02 FIX: only claim "near-optimal" when nothing is pending release.
+    # The old condition ignored consolidate verdicts, so the agent could state
+    # the portfolio was optimal while simultaneously instructing a release.
+    if (not exit_candidates and not release_candidates
+            and not expand_candidate):
         notes.append("portfolio already in near-optimal configuration given evidence")
 
     return DecisionReport(
@@ -218,6 +872,14 @@ def decide(held_pools: list, reward_info: dict, fee_evidence: Optional[dict] = N
         expand_candidate=expand_candidate,
         recommended_reallocation=recommended,
         notes=notes,
+        # 2026-10-02: carry the distance-to-threshold into the artifact so the
+        # advisory layer can check the destination ranking instead of guessing
+        # it from a raw score it was never shown the weighting for.
+        threshold_multiples={
+            p: (threshold_analysis.get(p) or {}).get(
+                "multiple_to_1e6_fee_threshold")
+            for p in held_pools
+        } if threshold_analysis else {},
     )
 
 
