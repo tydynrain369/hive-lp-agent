@@ -655,6 +655,33 @@ def main():
     agent.pe.load_all()
     agent.portfolio.load_balances()
     agent.portfolio.load_positions()
+    if "--deploy-idle" in sys.argv:
+        # 2026-10-17: the from-idle expand — plan (always) and
+        # execute (LIVE_MODE + --execute) the deploy into the
+        # decision's expand_candidate.
+        dplan = plan_idle_deploy(agent, decision, advisory=advisory)
+        print("=== FROM-IDLE DEPLOY (the autonomy expand) ===")
+        print(f"  decision : {dpath}")
+        print(f"  advisory : {(advisory or {}).get('verdict', 'none')}")
+        print(f"  live mode: {LIVE_MODE}   execute flag: {allow_execute}")
+        print(f"  action   : {dplan.get('action')}")
+        print(f"  reason   : {dplan.get('reason', '-')}")
+        if dplan.get("action") == "deploy_idle":
+            print(f"  pool     : {dplan.get('pool')}  "
+                  f"budget ${dplan.get('budget_usd'):.4f} "
+                  f"(cap ${MAX_USD_PER_ACTION})")
+            sz = dplan.get("sizing") or {}
+            print(f"  sizing   : {sz.get('base_token')} "
+                  f"{sz.get('base_amount')} + {sz.get('quote_token')} "
+                  f"{sz.get('quote_amount')} "
+                  f"(deploy ${sz.get('deploy_usd')})")
+            dplan = execute_idle_deploy(agent, dplan, allow_execute)
+            print(f"  executed : {dplan.get('executed')}")
+            for st in (dplan.get("steps") or []):
+                print(f"    {st}")
+            if dplan.get("reason"):
+                print(f"  reason   : {dplan['reason']}")
+        return 0 if dplan.get("executed") or dplan.get("action") in ("none",) else 1
 
     plan = plan_reallocation(agent, decision, advisory=advisory,
                              allow_challenge="--allow-challenge" in sys.argv)
@@ -676,6 +703,7 @@ def main():
         print("  NOTHING WILL BE DONE.")
         return 0
 
+
     if not (LIVE_MODE and allow_execute):
         print("  DRY-RUN — to actually remove liquidity you must set "
               "LP_TEST_LIVE=1 and pass --execute.")
@@ -686,6 +714,205 @@ def main():
         print(f"  removal: {out['removal']['status']} — "
               f"{out['removal'].get('note')}")
     return 0
+
+
+# ─── 2026-10-17: THE FROM-IDLE DEPLOY (the autonomy expand) ─────────────
+# No exit source required: deploy fresh idle SWAP.HIVE into the
+# decision's expand_candidate. Removals proved themselves live
+# (Leg A); the user's direction — capability earns autonomy —
+# promotes the deposit half from human-gated to agent-gated, with
+# every existing gate stacked: the $0.05 hard cap, per-leg route
+# spread <= the 1% ceiling, validated-price sizing (never invents
+# a quantity), LIVE_MODE + --execute to broadcast, and a
+# once-per-day throttle so the agent cannot dust-add in a loop.
+
+IDLE_DEPLOY_THROTTLE = os.path.expanduser(
+    "~/.hermes/lp_tests/LAST_IDLE_DEPLOY")
+IDLE_DEPLOY_MIN_USD = 0.03   # below this the TX cost manages nothing
+
+
+def _today_str():
+    from datetime import datetime
+    return datetime.utcnow().strftime("%Y-%m-%d")
+
+
+def _idle_deploy_throttled():
+    try:
+        return open(IDLE_DEPLOY_THROTTLE).read().strip() == _today_str()
+    except Exception:
+        return False
+
+
+def _mark_idle_deploy():
+    try:
+        with open(IDLE_DEPLOY_THROTTLE, "w") as fh:
+            fh.write(_today_str())
+    except Exception:
+        pass
+
+
+def plan_idle_deploy(agent, decision, advisory=None):
+    """Gate-stack a from-idle deployment; NEVER broadcasts."""
+    out = {"action": "none", "mode": "deploy_idle"}
+    dst = (decision.get("expand_candidate") or "").strip()
+    if not dst:
+        out["reason"] = "no expand candidate in the decision"
+        return out
+    verdict = (decision.get("verdicts") or {}).get(dst) or {}
+    if verdict.get("action") != "expand":
+        out["reason"] = (f"{dst} verdict is {verdict.get('action')!r}, "
+                         "not 'expand'")
+        return out
+    if advisory and advisory.get("verdict") == "CHALLENGE":
+        out["action"] = "blocked"
+        out["reason"] = ("advisory CHALLENGE stands: "
+                         + str(advisory.get("reason"))[:200])
+        return out
+    if _idle_deploy_throttled():
+        out["reason"] = "already deployed from idle today (throttle)"
+        return out
+
+    # the deployable budget: the actual SWAP.HIVE idle, capped
+    base, quote = dst.split(":", 1)
+    hive_bal = 0.0
+    try:
+        tb = agent.portfolio.balances.get("SWAP.HIVE")
+        hive_bal = float(getattr(tb, "balance", 0) or 0)
+    except Exception:
+        pass
+    if hive_bal <= 0:
+        out["reason"] = "no idle SWAP.HIVE to deploy"
+        return out
+    hive_usd = float(getattr(agent.pe, "token_prices", {}).get(
+        "SWAP.HIVE", 0) or 0)
+    budget = min(hive_bal * hive_usd, MAX_USD_PER_ACTION)
+    if budget < IDLE_DEPLOY_MIN_USD:
+        out["reason"] = (f"idle ${budget:.4f} below the "
+                         f"${IDLE_DEPLOY_MIN_USD} deploy floor")
+        return out
+
+    sizing = _size_deposit_stage(agent, dst, budget)
+    out["sizing"] = sizing
+    if sizing.get("status") != "sized":
+        out["action"] = "blocked"
+        out["reason"] = f"sizing refused: {sizing.get('status')}"
+        return out
+
+    # per-leg route spread: buying base + quote with HIVE must not
+    # cost more than the reallocation can earn (the 1% ceiling)
+    ml = getattr(agent.pe, "market_liquidity", None) or {}
+    for tok in (sizing.get("base_token"), sizing.get("quote_token")):
+        spread = (ml.get(tok) or {}).get("spread_pct")
+        if spread is not None and spread > 1.0:
+            out["action"] = "blocked"
+            out["reason"] = (f"route spread {tok} {spread:.3f}% "
+                             "exceeds the 1% ceiling")
+            return out
+
+    out.update({
+        "action": "deploy_idle",
+        "pool": dst,
+        "budget_usd": round(budget, 6),
+        "live": LIVE_MODE,
+        "cap_usd": MAX_USD_PER_ACTION,
+        "advisory_verdict": (advisory or {}).get("verdict"),
+        "throttle_file": IDLE_DEPLOY_THROTTLE,
+    })
+    return out
+
+
+def execute_idle_deploy(agent, plan, allow_execute):
+    """Swap HIVE into both legs, then add_liquidity with the
+    ACTUAL received amounts (the marketpools contract balances
+    the pair itself and refunds the excess)."""
+    if not (LIVE_MODE and allow_execute):
+        plan["executed"] = False
+        plan["reason"] = ("dry-run: LP_TEST_LIVE=1 + --execute "
+                          "required to broadcast")
+        return plan
+    if plan.get("action") != "deploy_idle":
+        return plan
+    ex = agent.executor
+    base = plan["sizing"]["base_token"]
+    quote = plan["sizing"]["quote_token"]
+
+    def _bal(sym):
+        try:
+            tb = agent.portfolio.balances.get(sym)
+            agent.portfolio.load_balances()
+            tb = agent.portfolio.balances.get(sym)
+            return float(getattr(tb, "balance", 0) or 0)
+        except Exception:
+            return 0.0
+
+    before_hive = _bal("SWAP.HIVE")
+    px = plan["sizing"].get("prices_used") or {}
+    hive_px = float(getattr(agent.pe, "token_prices", {}).get(
+        "SWAP.HIVE", 0) or 0)
+
+    # the HIVE cost of each leg from the validated prices
+    def _hive_cost(sym, amt):
+        p = float(px.get(sym, 0) or 0)
+        if p <= 0 or hive_px <= 0:
+            return 0.0
+        return (float(amt) * p) / hive_px
+
+    cost_b = _hive_cost(base, plan["sizing"]["base_amount"])
+    cost_q = _hive_cost(quote, plan["sizing"]["quote_amount"])
+    if cost_b <= 0 or cost_q <= 0 or cost_b + cost_q > before_hive:
+        plan["executed"] = False
+        plan["reason"] = (f"leg costs {cost_b:.6f}+{cost_q:.6f} HIVE "
+                          f"vs idle {before_hive:.6f}")
+        _log({"action": "deploy_idle_legs", "status": "refused",
+              "cost_base_hive": cost_b, "cost_quote_hive": cost_q,
+              "idle_hive": before_hive, "live": True})
+        return plan
+
+    steps = []
+    ok = ex.swap("SWAP.HIVE", base, cost_b)
+    steps.append({"step": f"swap SWAP.HIVE->{base}",
+                  "hive": round(cost_b, 6), "ok": bool(ok)})
+    if not ok:
+        plan["executed"] = False
+        plan["reason"] = f"base leg swap failed ({base})"
+        plan["steps"] = steps
+        _log({"action": "deploy_idle", "status": "base-leg-failed",
+              "steps": steps, "live": True})
+        return plan
+    ok = ex.swap("SWAP.HIVE", quote, cost_q)
+    steps.append({"step": f"swap SWAP.HIVE->{quote}",
+                  "hive": round(cost_q, 6), "ok": bool(ok)})
+    if not ok:
+        plan["executed"] = False
+        plan["reason"] = f"quote leg swap failed ({quote})"
+        plan["steps"] = steps
+        _log({"action": "deploy_idle", "status": "quote-leg-failed",
+              "steps": steps, "live": True})
+        return plan
+
+    got_b = _bal(base)
+    got_q = _bal(quote)
+    if got_b <= 0 or got_q <= 0:
+        plan["executed"] = False
+        plan["reason"] = "legs swapped but balances read empty"
+        plan["steps"] = steps
+        _log({"action": "deploy_idle", "status": "balance-read-failed",
+              "steps": steps, "live": True})
+        return plan
+
+    ok = ex.add_liquidity(base, quote, got_b, got_q)
+    steps.append({"step": f"add_liquidity {base}+{quote}",
+                  "base_amt": round(got_b, 6),
+                  "quote_amt": round(got_q, 6), "ok": bool(ok)})
+    plan["steps"] = steps
+    plan["executed"] = bool(ok)
+    if ok:
+        _mark_idle_deploy()
+    _log({"action": "deploy_idle", "status": "executed" if ok
+          else "add-liquidity-failed", "pool": plan.get("pool"),
+          "steps": steps, "live": True,
+          "cap_usd": MAX_USD_PER_ACTION})
+    return plan
 
 
 if __name__ == "__main__":

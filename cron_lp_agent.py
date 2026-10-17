@@ -960,11 +960,62 @@ def main():
         if decision is not None:
             actions = execute_from_decision(agent, decision)
             if not actions:
-                print("  No action taken this round.")
+                print("  No exit action this round.")
             for a in actions:
                 print(f"  [{a['status']}] {a['action']} {a['pool']} mag={a['magnitude']} — {a['note']}")
         else:
             print("  Skipped (no decision available).")
+        # --- 2026-10-17 THE AUTONOMY EXPAND (Tydyn's switch) ---
+        # Removals proved themselves live (Leg A, TX 33250382);
+        # the expand path now follows: when live mode is on and the
+        # decision recommends a reallocation, invoke the proven
+        # Leg-A realloc executor (LP_TEST_LIVE=1 + --execute, the
+        # $0.05 hard cap + route-cost ceiling + refusal gates all
+        # stack inside it). Dry-run nights print the plan only.
+        _live = os.environ.get("LP_TEST_LIVE", "") == "1"
+        _rec = getattr(decision, "recommended_reallocation", None) \
+            if decision is not None else None
+        _exp = getattr(decision, "expand_candidate", None) \
+            if decision is not None else None
+        import subprocess as _sp, sys as _sys
+        _rc_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "lp_realloc_executor.py")
+        if _live and _rec:
+            # 2026-10-17: the reallocation branch — an exit source
+            # exists, run the proven Leg-A executor (remove+stage).
+            print("  [AUTONOMY] reallocation recommended — invoking "
+                  "the executor (capped, live):")
+            _r = _sp.run([_sys.executable, _rc_path, "--execute"],
+                         capture_output=True, text=True, timeout=600)
+            for _ln in (_r.stdout or "").splitlines():
+                print(f"    {_ln}")
+            if _r.returncode != 0:
+                print(f"    [executor rc={_r.returncode}]")
+                print((_r.stderr or "").strip()[-600:])
+        elif _live and _exp and not _rec:
+            # 2026-10-17: the FROM-IDLE deploy — no exit source, but
+            # the decision wants to expand into _exp. Deploy fresh
+            # idle SWAP.HIVE through the proven from-idle path
+            # (2026-10-17 08:20 HST, first live run: swap legs +
+            # add_liquidity all confirmed). The executor's own
+            # once-per-day throttle keeps this from dust-adding in
+            # a loop; the $0.05 cap + 1% route ceiling + advisory
+            # verdict + validated-price sizing all stack inside.
+            print("  [AUTONOMY] expand verdict with idle capital — "
+                  "invoking the from-idle deploy (capped, live):")
+            _r = _sp.run(
+                [_sys.executable, _rc_path,
+                 "--deploy-idle", "--execute"],
+                capture_output=True, text=True, timeout=600)
+            for _ln in (_r.stdout or "").splitlines():
+                print(f"    {_ln}")
+            if _r.returncode != 0:
+                print(f"    [executor rc={_r.returncode}]")
+                print((_r.stderr or "").strip()[-600:])
+        elif _exp and not _live:
+            print("  [AUTONOMY OFF] expand verdict stands "
+                  f"({_exp}) — dry-run, no deploy.")
     except Exception as e:
         print(f"  Test execution failed (non-fatal): {e}")
 
