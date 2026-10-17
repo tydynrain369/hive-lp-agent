@@ -822,9 +822,16 @@ def plan_idle_deploy(agent, decision, advisory=None):
 
 
 def execute_idle_deploy(agent, plan, allow_execute):
-    """Swap HIVE into both legs, then add_liquidity with the
-    ACTUAL received amounts (the marketpools contract balances
-    the pair itself and refunds the excess)."""
+    """2026-10-17 EVENING REWRITE (the 08:20 lesson): swap HIVE into
+    both legs via marketpools::swapTokens (the 10-09 proven
+    primitive), verify EVERY step by INDEPENDENT fresh-RPC balance
+    reads (a truthy library return is NOT evidence: the 08:20 run
+    broadcast two backwards market::buy ops the contract rejected
+    and one add that never broadcast, while every layer printed
+    success), then add liquidity through TestExecutor and verify
+    the position shares grew. The throttle is marked ONLY on
+    verified success."""
+    plan.setdefault("steps", [])
     if not (LIVE_MODE and allow_execute):
         plan["executed"] = False
         plan["reason"] = ("dry-run: LP_TEST_LIVE=1 + --execute "
@@ -832,88 +839,210 @@ def execute_idle_deploy(agent, plan, allow_execute):
         return plan
     if plan.get("action") != "deploy_idle":
         return plan
-    ex = agent.executor
-    base = plan["sizing"]["base_token"]
-    quote = plan["sizing"]["quote_token"]
+
+    import requests as _rq, time as _time
+    RPC = "https://api.hive-engine.com/rpc/contracts"
+    ACCT = agent.acct["account"] if hasattr(agent, "acct") else \
+        json.load(open(os.path.expanduser(
+            "/mnt/vault/Hermes-Keys/hermes-sandbox.json")))["account"]
+
+    def _find(contract, table, query, limit=5):
+        r = _rq.post(RPC, json={"jsonrpc": "2.0", "id": 1,
+                                "method": "find",
+                                "params": {"contract": contract,
+                                           "table": table,
+                                           "query": query,
+                                           "limit": limit}}, timeout=45).json()
+        return r.get("result") or []
 
     def _bal(sym):
-        try:
-            tb = agent.portfolio.balances.get(sym)
-            agent.portfolio.load_balances()
-            tb = agent.portfolio.balances.get(sym)
-            return float(getattr(tb, "balance", 0) or 0)
-        except Exception:
-            return 0.0
+        rows = _find("tokens", "balances",
+                    {"account": ACCT, "symbol": sym}, 1)
+        return float(rows[0]["balance"]) if rows else 0.0
 
-    before_hive = _bal("SWAP.HIVE")
-    px = plan["sizing"].get("prices_used") or {}
+    def _pair_for(a, b):
+        """The canonical tokenPair string for the pool holding a+b."""
+        for pair in (f"{a}:{b}", f"{b}:{a}"):
+            if _find("marketpools", "pools", {"tokenPair": pair}, 1):
+                return pair
+        return None
+
+    def _ratio(pair):
+        rows = _find("marketpools", "pools", {"tokenPair": pair}, 1)
+        if not rows:
+            return None
+        return (float(rows[0]["baseQuantity"]),
+                float(rows[0]["quoteQuantity"]))
+
+    base = plan["sizing"]["base_token"]
+    quote = plan["sizing"]["quote_token"]
+    dst = plan.get("pool")
+    IN = "SWAP.HIVE"
+
+    # --- PRE-STATE: independent reads, the arbitration baseline ---
+    pre_hive = _bal(IN)
+    pre_b = _bal(base)
+    pre_q = _bal(quote)
+    pre_pos = _find("marketpools", "liquidityPositions",
+                    {"account": ACCT, "tokenPair": dst}, 1)
+    pre_shares = float(pre_pos[0]["shares"]) if pre_pos else 0.0
+    plan["pre_state"] = {"hive": pre_hive, "base": pre_b,
+                         "quote": pre_q, "shares": pre_shares}
+
+    # --- leg sizing from POOL RATIOS (the executable truth), not
+    # the price map: the 08:20 sizing priced CENT ~19x off pool
+    # reality. Equal HIVE value per side.
+    budget_usd = plan.get("budget_usd") or 0.0
     hive_px = float(getattr(agent.pe, "token_prices", {}).get(
-        "SWAP.HIVE", 0) or 0)
-
-    # the HIVE cost of each leg from the validated prices
-    def _hive_cost(sym, amt):
-        p = float(px.get(sym, 0) or 0)
-        if p <= 0 or hive_px <= 0:
-            return 0.0
-        return (float(amt) * p) / hive_px
-
-    cost_b = _hive_cost(base, plan["sizing"]["base_amount"])
-    cost_q = _hive_cost(quote, plan["sizing"]["quote_amount"])
-    if cost_b <= 0 or cost_q <= 0 or cost_b + cost_q > before_hive:
+        IN, 0) or 0)
+    budget_hive = min(
+        budget_usd / hive_px if hive_px > 0 else 0.0,
+        pre_hive * 0.98)          # never touch the last 2% (fees)
+    if budget_hive <= 0.10 * 0.0525 / 0.0525:  # sanity floor
         plan["executed"] = False
-        plan["reason"] = (f"leg costs {cost_b:.6f}+{cost_q:.6f} HIVE "
-                          f"vs idle {before_hive:.6f}")
-        _log({"action": "deploy_idle_legs", "status": "refused",
-              "cost_base_hive": cost_b, "cost_quote_hive": cost_q,
-              "idle_hive": before_hive, "live": True})
+        plan["reason"] = f"budget_hive {budget_hive:.6f} too small"
+        return plan
+    leg_hive = round(budget_hive / 2.0, 8)
+    plan["budget_hive"] = round(budget_hive, 8)
+
+    from nectar import Hive
+    from nectarengine.pool import LiquidityPool
+    from liquidity_agent_v2 import HIVE_RPC, VAULT_PATH
+    creds = json.load(open(VAULT_PATH))
+    hive = Hive(node=[HIVE_RPC],
+                keys={creds["account"]: creds["active"]})
+    lp = LiquidityPool(blockchain_instance=hive)
+
+    def _swap_leg(out_sym, leg_amount):
+        """Swap leg_amount SWAP.HIVE -> out_sym via its pool, then
+        VERIFY by fresh balance reads. Returns (ok, trx_id, note)."""
+        pair = _pair_for(IN, out_sym)
+        if not pair:
+            return False, None, f"no pool {IN}/{out_sym}"
+        b, q = _ratio(pair)
+        if not b or not q:
+            return False, None, f"pool {pair} unreadable"
+        # out-per-hive: whichever side is SWAP.HIVE is the input
+        per_hive = (q / b) if pair.split(":")[0] == IN else (b / q)
+        expect = leg_amount * per_hive
+        min_out = round(expect * 0.95, 8)
+        if min_out <= 0:
+            return False, None, "degenerate expected output"
+        try:
+            res = lp.swap_tokens(account=ACCT, token_pair=pair,
+                                 token_symbol=IN,
+                                 token_amount=leg_amount,
+                                 trade_type="exactInput",
+                                 min_amount_out=min_out)
+            trx_id = (res or {}).get("trx_id") if isinstance(res, dict) else None
+        except Exception as e:
+            return False, None, f"{type(e).__name__}: {e}"
+        _time.sleep(6)   # contract settle
+        # INDEPENDENT VERIFY: the output arrived AND the HIVE left
+        got = _bal(out_sym) - (pre_b if out_sym == base else
+                              pre_q if out_sym == quote else _bal(out_sym))
+        spent = _bal(IN)
+        # fresh pre for this leg = current hive before next reads
+        arrived = _bal(out_sym)
+        prev = plan["steps"][-1].get("post_bal", {}).get(out_sym) \
+            if plan["steps"] else None
+        baseline = prev if prev is not None else (
+            pre_b if out_sym == base else pre_q)
+        delta_out = arrived - baseline
+        if delta_out <= 0:
+            return False, trx_id, (f"swap broadcast but NO EFFECT: "
+                                   f"{out_sym} delta {delta_out:.8f}")
+        return True, trx_id, {"arrived": round(delta_out, 8),
+                              "per_hive": round(per_hive, 6)}
+
+    # leg 1: HIVE -> base
+    ok1, tx1, info1 = _swap_leg(base, leg_hive)
+    plan["steps"].append({"step": f"swap {leg_hive} {IN}->{base}",
+                          "ok": ok1, "trx_id": tx1,
+                          "info": info1})
+    _log({"action": "deploy_idle_leg", "leg": base, "ok": ok1,
+          "trx_id": tx1, "info": info1, "live": True})
+    if not ok1:
+        plan["executed"] = False
+        plan["reason"] = f"base leg failed: {info1}"
         return plan
 
-    steps = []
-    ok = ex.swap("SWAP.HIVE", base, cost_b)
-    steps.append({"step": f"swap SWAP.HIVE->{base}",
-                  "hive": round(cost_b, 6), "ok": bool(ok)})
-    if not ok:
+    # leg 2: HIVE -> quote
+    post1 = {"hive": _bal(IN), base: _bal(base), quote: _bal(quote)}
+    plan["steps"][-1]["post_bal"] = post1
+    ok2, tx2, info2 = _swap_leg(quote, leg_hive)
+    plan["steps"].append({"step": f"swap {leg_hive} {IN}->{quote}",
+                          "ok": ok2, "trx_id": tx2,
+                          "info": info2})
+    _log({"action": "deploy_idle_leg", "leg": quote, "ok": ok2,
+          "trx_id": tx2, "info": info2, "live": True})
+    if not ok2:
         plan["executed"] = False
-        plan["reason"] = f"base leg swap failed ({base})"
-        plan["steps"] = steps
-        _log({"action": "deploy_idle", "status": "base-leg-failed",
-              "steps": steps, "live": True})
-        return plan
-    ok = ex.swap("SWAP.HIVE", quote, cost_q)
-    steps.append({"step": f"swap SWAP.HIVE->{quote}",
-                  "hive": round(cost_q, 6), "ok": bool(ok)})
-    if not ok:
-        plan["executed"] = False
-        plan["reason"] = f"quote leg swap failed ({quote})"
-        plan["steps"] = steps
-        _log({"action": "deploy_idle", "status": "quote-leg-failed",
-              "steps": steps, "live": True})
+        plan["reason"] = f"quote leg failed: {info2}"
         return plan
 
-    got_b = _bal(base)
-    got_q = _bal(quote)
-    if got_b <= 0 or got_q <= 0:
+    # --- the ADD: ratio-matched from what ACTUALLY arrived ---
+    post2 = {"hive": _bal(IN), base: _bal(base), quote: _bal(quote)}
+    plan["steps"][-1]["post_bal"] = post2
+    got_b = post2[base] - pre_b
+    got_q = post2[quote] - pre_q
+    rb, rq = _ratio(dst) or (0, 0)
+    r = (rb / rq) if rq else None    # base per quote
+    if not r or got_b <= 0 or got_q <= 0:
         plan["executed"] = False
-        plan["reason"] = "legs swapped but balances read empty"
-        plan["steps"] = steps
-        _log({"action": "deploy_idle", "status": "balance-read-failed",
-              "steps": steps, "live": True})
+        plan["reason"] = (f"legs ok but pool ratio unreadable or "
+                          f"amounts degenerate (got_b {got_b:.6f}, "
+                          f"got_q {got_q:.6f})")
+        return plan
+    # ratio-match: the pair that fits
+    add_b = min(got_b, got_q * r) * 0.9999
+    add_q = add_b / r * 0.9999
+    est_usd = budget_usd
+    if est_usd > MAX_USD_PER_ACTION:
+        plan["executed"] = False
+        plan["reason"] = "est exceeds cap"
         return plan
 
-    ok = ex.add_liquidity(base, quote, got_b, got_q)
-    steps.append({"step": f"add_liquidity {base}+{quote}",
-                  "base_amt": round(got_b, 6),
-                  "quote_amt": round(got_q, 6), "ok": bool(ok)})
-    plan["steps"] = steps
-    plan["executed"] = bool(ok)
-    if ok:
-        _mark_idle_deploy()
-    _log({"action": "deploy_idle", "status": "executed" if ok
-          else "add-liquidity-failed", "pool": plan.get("pool"),
-          "steps": steps, "live": True,
+    from lp_executor_test import TestExecutor
+    entry = TestExecutor(agent).add_liquidity(
+        dst, round(add_b, 8), round(add_q, 8), est_usd,
+        reason="autonomous from-idle deploy (verified legs)")
+    plan["steps"].append({"step": f"add_liquidity {dst}",
+                          "base_amt": round(add_b, 8),
+                          "quote_amt": round(add_q, 8),
+                          "ok": entry.get("status") == "broadcast",
+                          "entry": entry})
+    _log({"action": "deploy_idle_add", "entry": entry, "live": True})
+
+    # --- FINAL INDEPENDENT VERIFY: shares grew + tokens left ---
+    _time.sleep(6)
+    fin_b = _bal(base)
+    fin_q = _bal(quote)
+    fin_pos = _find("marketpools", "liquidityPositions",
+                    {"account": ACCT, "tokenPair": dst}, 1)
+    fin_shares = float(fin_pos[0]["shares"]) if fin_pos else 0.0
+    plan["post_state"] = {"base": fin_b, "quote": fin_q,
+                          "shares": fin_shares}
+    shares_grew = fin_shares > pre_shares
+    tokens_left = (fin_b < post2[base]) and (fin_q < post2[quote])
+    if not (shares_grew and tokens_left):
+        plan["executed"] = False
+        plan["reason"] = (f"FINAL VERIFY FAILED: shares "
+                          f"{pre_shares}->{fin_shares} "
+                          f"(grew={shares_grew}), tokens_left={tokens_left}")
+        _log({"action": "deploy_idle", "status": "verify-failed",
+              "pre_shares": pre_shares, "fin_shares": fin_shares,
+              "steps": plan["steps"], "live": True})
+        return plan
+
+    plan["executed"] = True
+    plan["shares_delta"] = round(fin_shares - pre_shares, 8)
+    _mark_idle_deploy()
+    _log({"action": "deploy_idle", "status": "executed+verified",
+          "pool": dst, "shares_delta": plan["shares_delta"],
+          "steps": plan["steps"], "live": True,
           "cap_usd": MAX_USD_PER_ACTION})
     return plan
-
 
 if __name__ == "__main__":
     sys.exit(main())
