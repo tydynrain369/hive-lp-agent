@@ -967,10 +967,23 @@ def execute_idle_deploy(agent, plan, allow_execute):
         plan["reason"] = f"base leg failed: {info1}"
         return plan
 
-    # leg 2: HIVE -> quote
+    # leg 2: HIVE -> quote — sized from the ACTUAL remaining balance
+    # (2026-10-17 live lesson: a nectar network retry double-broadcast
+    # leg 1 (ops #222/#223), consuming both legs' budgets; leg 2 must
+    # adapt to reality, not the plan, or it refuses honestly)
     post1 = {"hive": _bal(IN), base: _bal(base), quote: _bal(quote)}
     plan["steps"][-1]["post_bal"] = post1
-    ok2, tx2, info2 = _swap_leg(quote, leg_hive)
+    leg2_hive = min(leg_hive, round(post1["hive"] * 0.98, 8))
+    if leg2_hive * hive_px < IDLE_DEPLOY_MIN_USD / 2:
+        plan["executed"] = False
+        plan["reason"] = (f"base leg double-spent the budget (remaining "
+                          f"{post1['hive']:.6f} HIVE) — completing as "
+                          f"one-sided is worse than stopping; rebalance "
+                          f"manually via the destination pool")
+        _log({"action": "deploy_idle", "status": "leg2-underfunded",
+              "post1": post1, "live": True})
+        return plan
+    ok2, tx2, info2 = _swap_leg(quote, leg2_hive)
     plan["steps"].append({"step": f"swap {leg_hive} {IN}->{quote}",
                           "ok": ok2, "trx_id": tx2,
                           "info": info2})
