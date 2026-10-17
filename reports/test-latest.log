@@ -1,0 +1,31 @@
+...................................................................
+----------------------------------------------------------------------
+Ran 67 tests in 0.061s
+
+OK
+=== HERMES LP AGENT CRON RUN ===
+Started: 2026-09-17T07:33:45.273274
+  PriceEngine: 1 pools, 2 indicative marks; SWAP.HBD numeraire
+Portfolio valuation: {"basis": "indicative reserve-ratio marks; not executable sale quotes", "liquid_known_mark": 0.004, "lp_known_mark": 0.004, "staked_known_mark": 200.0, "unpriced_liquid": [], "unpriced_staked": [], "unpriced_positions": []}
+Positions: 1
+
+=== REWARD DISCOVERY ===
+  Discovery: 0 active-flag batches, 0 funded reward pools
+  Discovered 0 active reward distributions
+  [DRY-RUN] Funded-test tracking skipped: no verified deployment receipt
+
+=== POSITION MANAGEMENT ===
+  Joint selector: {"selected": [], "net_advantage_lower": "0", "reserved": {}, "assessments": [{"id": "A:SWAP.HBD", "decision": "observe", "net_advantage_lower": null, "reason": "mechanics not verified"}], "scope": "best subset of supplied independent verified scenarios; not all possible allocations"}
+  Assessed 1 pools; 1 have nonzero paired liquid amounts
+  Planned actions: 0 — net advantage and execution quotes not yet verified
+  [DRY-RUN] No transactions submitted
+
+Completed: 2026-09-17T07:33:45.273679
+  PriceEngine: 0 pools, 1 indicative marks; SWAP.HBD numeraire
+  PriceEngine: 0 pools, 1 indicative marks; SWAP.HBD numeraire
+  PriceEngine: 2 pools, 3 indicative marks; SWAP.HBD numeraire
+  PriceEngine: 4 pools, 4 indicative marks; SWAP.HBD numeraire
+  PriceEngine: 4 pools, 4 indicative marks; SWAP.HBD numeraire
+  PriceEngine: 1 pools, 2 indicative marks; SWAP.HBD numeraire
+  PriceEngine: 0 pools, 1 indicative marks; SWAP.HBD numeraire
+  Discovery: 2 active-flag batches, 1 funded reward pools

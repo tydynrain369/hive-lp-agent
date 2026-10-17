@@ -1,0 +1,64 @@
+{
+  "generated_at": "2026-09-18T14:15:13.354643",
+  "evidence_window_h": 14.0,
+  "verdicts": {
+    "ALIVE:HEARTBEAT": {
+      "pool": "ALIVE:HEARTBEAT",
+      "fee_apr_pct": 0.99,
+      "reward_token_count": 11,
+      "notable_rewards_per_day": {
+        "ALIVE": 2.57,
+        "PEPENTROPY": 14.29,
+        "HEARTBEAT": 2.57
+      },
+      "classification": "productive"
+    },
+    "ALIVE:SWAP.HIVE": {
+      "pool": "ALIVE:SWAP.HIVE",
+      "fee_apr_pct": 0.77,
+      "reward_token_count": 21,
+      "notable_rewards_per_day": {
+        "GAMER": 69.7,
+        "PEPE": 50.98,
+        "IDD": 4.42
+      },
+      "classification": "productive"
+    },
+    "BBH:SWAP.HIVE": {
+      "pool": "BBH:SWAP.HIVE",
+      "fee_apr_pct": 0.01,
+      "reward_token_count": 0,
+      "notable_rewards_per_day": {},
+      "classification": "zombie"
+    },
+    "HSBIDAO:PIXYDUST": {
+      "pool": "HSBIDAO:PIXYDUST",
+      "fee_apr_pct": 0.0,
+      "reward_token_count": 13,
+      "notable_rewards_per_day": {
+        "THREE": 1385892054,
+        "PEPE": 130.12,
+        "PIMP": 49.68,
+        "GLITTER": 29.9
+      },
+      "classification": "reward-productive"
+    }
+  },
+  "recommendations": [
+    {
+      "action": "exit_and_reallocate",
+      "from_pool": "BBH:SWAP.HIVE",
+      "to_pool": "ALIVE:HEARTBEAT",
+      "reason": "zero fees (0.010% APR) AND zero rewards; target ALIVE:HEARTBEAT has 0.99% fee APR + 11 reward tokens",
+      "confidence": "high",
+      "requires_approval": true,
+      "urgency": "low"
+    }
+  ],
+  "policy": {
+    "min_fee_apr_for_productive": 0.5,
+    "min_notable_daily_reward": 0.5,
+    "exit_requires_both_zero": true,
+    "never_auto_execute": true
+  }
+}

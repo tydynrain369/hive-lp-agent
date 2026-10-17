@@ -1,0 +1,12 @@
+{
+  "checks": {
+    "complete_participant_share_sum": true,
+    "deposit_within_balances": true,
+    "independent_rational_tick_payouts": true,
+    "independent_reward_total": true,
+    "terminal_subtraction": true,
+    "not_promoted_to_verified_bounds": true
+  },
+  "method": "Independent fractions.Fraction payout and budget depletion calculation; verifies fixed-participant scenario, not future outcomes",
+  "reward_POB": "0.01731696"
+}

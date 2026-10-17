@@ -1,0 +1,971 @@
+[
+  {
+    "path": "/home/tydynrain/hive-agent-test/reports/planner-snapshot-20260917T100507Z.json",
+    "timestamp_utc": "20260917T100507Z",
+    "relevant_queries": [
+      {
+        "method": "find",
+        "params": {
+          "contract": "marketpools",
+          "table": "pools",
+          "query": {},
+          "limit": 1000
+        },
+        "row_count": 346,
+        "contains_batch296": null
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "marketpools",
+          "table": "liquidityPositions",
+          "query": {
+            "account": "hermes-sandbox"
+          },
+          "limit": 1000
+        },
+        "row_count": 4,
+        "contains_batch296": null
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "distribution",
+          "table": "batches",
+          "query": {
+            "active": true,
+            "strategy": "pool"
+          },
+          "limit": 1000
+        },
+        "row_count": 245,
+        "contains_batch296": true
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "mining",
+          "table": "pools",
+          "query": {}
+        },
+        "row_count": 34,
+        "contains_batch296": null
+      }
+    ]
+  },
+  {
+    "path": "/home/tydynrain/hive-agent-test/reports/planner-snapshot-20260917T103019Z.json",
+    "timestamp_utc": "20260917T103019Z",
+    "relevant_queries": [
+      {
+        "method": "find",
+        "params": {
+          "contract": "marketpools",
+          "table": "pools",
+          "query": {},
+          "limit": 1000,
+          "offset": 0,
+          "indexes": [
+            {
+              "index": "_id",
+              "descending": false
+            }
+          ]
+        },
+        "row_count": 346,
+        "contains_batch296": null
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "marketpools",
+          "table": "liquidityPositions",
+          "query": {
+            "account": "hermes-sandbox"
+          },
+          "limit": 1000,
+          "offset": 0,
+          "indexes": [
+            {
+              "index": "_id",
+              "descending": false
+            }
+          ]
+        },
+        "row_count": 4,
+        "contains_batch296": null
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "distribution",
+          "table": "batches",
+          "query": {
+            "active": true,
+            "strategy": "pool"
+          },
+          "limit": 1000
+        },
+        "row_count": 245,
+        "contains_batch296": true
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "mining",
+          "table": "pools",
+          "query": {}
+        },
+        "row_count": 34,
+        "contains_batch296": null
+      }
+    ]
+  },
+  {
+    "path": "/home/tydynrain/hive-agent-test/reports/planner-snapshot-20260917T103307Z.json",
+    "timestamp_utc": "20260917T103307Z",
+    "relevant_queries": [
+      {
+        "method": "find",
+        "params": {
+          "contract": "marketpools",
+          "table": "pools",
+          "query": {},
+          "limit": 1000,
+          "offset": 0,
+          "indexes": [
+            {
+              "index": "_id",
+              "descending": false
+            }
+          ]
+        },
+        "row_count": 346,
+        "contains_batch296": null
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "marketpools",
+          "table": "liquidityPositions",
+          "query": {
+            "account": "hermes-sandbox"
+          },
+          "limit": 1000,
+          "offset": 0,
+          "indexes": [
+            {
+              "index": "_id",
+              "descending": false
+            }
+          ]
+        },
+        "row_count": 4,
+        "contains_batch296": null
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "distribution",
+          "table": "params",
+          "query": {},
+          "limit": 1000,
+          "offset": 0,
+          "indexes": [
+            {
+              "index": "_id",
+              "descending": false
+            }
+          ]
+        },
+        "row_count": 1,
+        "contains_batch296": null
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "distribution",
+          "table": "batches",
+          "query": {
+            "active": true,
+            "strategy": "pool"
+          },
+          "limit": 1000,
+          "offset": 0,
+          "indexes": [
+            {
+              "index": "_id",
+              "descending": false
+            }
+          ]
+        },
+        "row_count": 245,
+        "contains_batch296": true
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "mining",
+          "table": "pools",
+          "query": {},
+          "limit": 1000,
+          "offset": 0,
+          "indexes": [
+            {
+              "index": "_id",
+              "descending": false
+            }
+          ]
+        },
+        "row_count": 34,
+        "contains_batch296": null
+      }
+    ]
+  },
+  {
+    "path": "/home/tydynrain/hive-agent-test/reports/planner-snapshot-20260917T103855Z.json",
+    "timestamp_utc": "20260917T103855Z",
+    "relevant_queries": [
+      {
+        "method": "find",
+        "params": {
+          "contract": "marketpools",
+          "table": "pools",
+          "query": {},
+          "limit": 1000,
+          "offset": 0,
+          "indexes": [
+            {
+              "index": "_id",
+              "descending": false
+            }
+          ]
+        },
+        "row_count": 346,
+        "contains_batch296": null
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "marketpools",
+          "table": "liquidityPositions",
+          "query": {
+            "account": "hermes-sandbox"
+          },
+          "limit": 1000,
+          "offset": 0,
+          "indexes": [
+            {
+              "index": "_id",
+              "descending": false
+            }
+          ]
+        },
+        "row_count": 4,
+        "contains_batch296": null
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "distribution",
+          "table": "params",
+          "query": {},
+          "limit": 1000,
+          "offset": 0,
+          "indexes": [
+            {
+              "index": "_id",
+              "descending": false
+            }
+          ]
+        },
+        "row_count": 1,
+        "contains_batch296": null
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "distribution",
+          "table": "batches",
+          "query": {
+            "active": true,
+            "strategy": "pool"
+          },
+          "limit": 1000,
+          "offset": 0,
+          "indexes": [
+            {
+              "index": "_id",
+              "descending": false
+            }
+          ]
+        },
+        "row_count": 245,
+        "contains_batch296": true
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "mining",
+          "table": "pools",
+          "query": {},
+          "limit": 1000,
+          "offset": 0,
+          "indexes": [
+            {
+              "index": "_id",
+              "descending": false
+            }
+          ]
+        },
+        "row_count": 34,
+        "contains_batch296": null
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "marketpools",
+          "table": "liquidityPositions",
+          "query": {
+            "tokenPair": "HSBIDAO:PIXYDUST"
+          },
+          "limit": 1000,
+          "offset": 0,
+          "indexes": [
+            {
+              "index": "_id",
+              "descending": false
+            }
+          ]
+        },
+        "row_count": 20,
+        "contains_batch296": null
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "marketpools",
+          "table": "liquidityPositions",
+          "query": {
+            "tokenPair": "ALIVE:HEARTBEAT"
+          },
+          "limit": 1000,
+          "offset": 0,
+          "indexes": [
+            {
+              "index": "_id",
+              "descending": false
+            }
+          ]
+        },
+        "row_count": 28,
+        "contains_batch296": null
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "marketpools",
+          "table": "liquidityPositions",
+          "query": {
+            "tokenPair": "ALIVE:SWAP.HIVE"
+          },
+          "limit": 1000,
+          "offset": 0,
+          "indexes": [
+            {
+              "index": "_id",
+              "descending": false
+            }
+          ]
+        },
+        "row_count": 39,
+        "contains_batch296": null
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "marketpools",
+          "table": "liquidityPositions",
+          "query": {
+            "tokenPair": "BBH:SWAP.HIVE"
+          },
+          "limit": 1000,
+          "offset": 0,
+          "indexes": [
+            {
+              "index": "_id",
+              "descending": false
+            }
+          ]
+        },
+        "row_count": 26,
+        "contains_batch296": null
+      }
+    ]
+  },
+  {
+    "path": "/home/tydynrain/hive-agent-test/reports/planner-snapshot-20260917T104204Z.json",
+    "timestamp_utc": "20260917T104204Z",
+    "relevant_queries": [
+      {
+        "method": "find",
+        "params": {
+          "contract": "marketpools",
+          "table": "pools",
+          "query": {},
+          "limit": 1000,
+          "offset": 0,
+          "indexes": [
+            {
+              "index": "_id",
+              "descending": false
+            }
+          ]
+        },
+        "row_count": 346,
+        "contains_batch296": null
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "marketpools",
+          "table": "liquidityPositions",
+          "query": {
+            "account": "hermes-sandbox"
+          },
+          "limit": 1000,
+          "offset": 0,
+          "indexes": [
+            {
+              "index": "_id",
+              "descending": false
+            }
+          ]
+        },
+        "row_count": 4,
+        "contains_batch296": null
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "distribution",
+          "table": "params",
+          "query": {},
+          "limit": 1000,
+          "offset": 0,
+          "indexes": [
+            {
+              "index": "_id",
+              "descending": false
+            }
+          ]
+        },
+        "row_count": 1,
+        "contains_batch296": null
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "distribution",
+          "table": "batches",
+          "query": {
+            "active": true,
+            "strategy": "pool"
+          },
+          "limit": 1000,
+          "offset": 0,
+          "indexes": [
+            {
+              "index": "_id",
+              "descending": false
+            }
+          ]
+        },
+        "row_count": 245,
+        "contains_batch296": true
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "mining",
+          "table": "pools",
+          "query": {},
+          "limit": 1000,
+          "offset": 0,
+          "indexes": [
+            {
+              "index": "_id",
+              "descending": false
+            }
+          ]
+        },
+        "row_count": 34,
+        "contains_batch296": null
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "marketpools",
+          "table": "liquidityPositions",
+          "query": {
+            "tokenPair": "HSBIDAO:PIXYDUST"
+          },
+          "limit": 1000,
+          "offset": 0,
+          "indexes": [
+            {
+              "index": "_id",
+              "descending": false
+            }
+          ]
+        },
+        "row_count": 20,
+        "contains_batch296": null
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "marketpools",
+          "table": "liquidityPositions",
+          "query": {
+            "tokenPair": "ALIVE:HEARTBEAT"
+          },
+          "limit": 1000,
+          "offset": 0,
+          "indexes": [
+            {
+              "index": "_id",
+              "descending": false
+            }
+          ]
+        },
+        "row_count": 28,
+        "contains_batch296": null
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "marketpools",
+          "table": "liquidityPositions",
+          "query": {
+            "tokenPair": "ALIVE:SWAP.HIVE"
+          },
+          "limit": 1000,
+          "offset": 0,
+          "indexes": [
+            {
+              "index": "_id",
+              "descending": false
+            }
+          ]
+        },
+        "row_count": 39,
+        "contains_batch296": null
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "marketpools",
+          "table": "liquidityPositions",
+          "query": {
+            "tokenPair": "BBH:SWAP.HIVE"
+          },
+          "limit": 1000,
+          "offset": 0,
+          "indexes": [
+            {
+              "index": "_id",
+              "descending": false
+            }
+          ]
+        },
+        "row_count": 26,
+        "contains_batch296": null
+      }
+    ]
+  },
+  {
+    "path": "/home/tydynrain/hive-agent-test/reports/planner-snapshot-20260917T170629Z.json",
+    "timestamp_utc": "20260917T170629Z",
+    "relevant_queries": [
+      {
+        "method": "find",
+        "params": {
+          "contract": "marketpools",
+          "table": "pools",
+          "query": {},
+          "limit": 1000,
+          "offset": 0,
+          "indexes": [
+            {
+              "index": "_id",
+              "descending": false
+            }
+          ]
+        },
+        "row_count": 346,
+        "contains_batch296": null
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "marketpools",
+          "table": "liquidityPositions",
+          "query": {
+            "account": "hermes-sandbox"
+          },
+          "limit": 1000,
+          "offset": 0,
+          "indexes": [
+            {
+              "index": "_id",
+              "descending": false
+            }
+          ]
+        },
+        "row_count": 4,
+        "contains_batch296": null
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "distribution",
+          "table": "params",
+          "query": {},
+          "limit": 1000,
+          "offset": 0,
+          "indexes": [
+            {
+              "index": "_id",
+              "descending": false
+            }
+          ]
+        },
+        "row_count": 1,
+        "contains_batch296": null
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "distribution",
+          "table": "batches",
+          "query": {
+            "active": true,
+            "strategy": "pool"
+          },
+          "limit": 1000,
+          "offset": 0,
+          "indexes": [
+            {
+              "index": "_id",
+              "descending": false
+            }
+          ]
+        },
+        "row_count": 245,
+        "contains_batch296": true
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "mining",
+          "table": "pools",
+          "query": {},
+          "limit": 1000,
+          "offset": 0,
+          "indexes": [
+            {
+              "index": "_id",
+              "descending": false
+            }
+          ]
+        },
+        "row_count": 34,
+        "contains_batch296": null
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "marketpools",
+          "table": "liquidityPositions",
+          "query": {
+            "tokenPair": "HSBIDAO:PIXYDUST"
+          },
+          "limit": 1000,
+          "offset": 0,
+          "indexes": [
+            {
+              "index": "_id",
+              "descending": false
+            }
+          ]
+        },
+        "row_count": 20,
+        "contains_batch296": null
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "marketpools",
+          "table": "liquidityPositions",
+          "query": {
+            "tokenPair": "ALIVE:HEARTBEAT"
+          },
+          "limit": 1000,
+          "offset": 0,
+          "indexes": [
+            {
+              "index": "_id",
+              "descending": false
+            }
+          ]
+        },
+        "row_count": 28,
+        "contains_batch296": null
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "marketpools",
+          "table": "liquidityPositions",
+          "query": {
+            "tokenPair": "ALIVE:SWAP.HIVE"
+          },
+          "limit": 1000,
+          "offset": 0,
+          "indexes": [
+            {
+              "index": "_id",
+              "descending": false
+            }
+          ]
+        },
+        "row_count": 39,
+        "contains_batch296": null
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "marketpools",
+          "table": "liquidityPositions",
+          "query": {
+            "tokenPair": "BBH:SWAP.HIVE"
+          },
+          "limit": 1000,
+          "offset": 0,
+          "indexes": [
+            {
+              "index": "_id",
+              "descending": false
+            }
+          ]
+        },
+        "row_count": 26,
+        "contains_batch296": null
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "marketpools",
+          "table": "pools",
+          "query": {},
+          "limit": 1000
+        },
+        "row_count": 346,
+        "contains_batch296": null
+      }
+    ]
+  },
+  {
+    "path": "/home/tydynrain/hive-agent-test/reports/planner-snapshot-20260917T171214Z.json",
+    "timestamp_utc": "20260917T171214Z",
+    "relevant_queries": [
+      {
+        "method": "find",
+        "params": {
+          "contract": "marketpools",
+          "table": "pools",
+          "query": {},
+          "limit": 1000,
+          "offset": 0,
+          "indexes": [
+            {
+              "index": "_id",
+              "descending": false
+            }
+          ]
+        },
+        "row_count": 346,
+        "contains_batch296": null
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "marketpools",
+          "table": "liquidityPositions",
+          "query": {
+            "account": "hermes-sandbox"
+          },
+          "limit": 1000,
+          "offset": 0,
+          "indexes": [
+            {
+              "index": "_id",
+              "descending": false
+            }
+          ]
+        },
+        "row_count": 4,
+        "contains_batch296": null
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "distribution",
+          "table": "params",
+          "query": {},
+          "limit": 1000,
+          "offset": 0,
+          "indexes": [
+            {
+              "index": "_id",
+              "descending": false
+            }
+          ]
+        },
+        "row_count": 1,
+        "contains_batch296": null
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "distribution",
+          "table": "batches",
+          "query": {
+            "active": true,
+            "strategy": "pool"
+          },
+          "limit": 1000,
+          "offset": 0,
+          "indexes": [
+            {
+              "index": "_id",
+              "descending": false
+            }
+          ]
+        },
+        "row_count": 245,
+        "contains_batch296": true
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "mining",
+          "table": "pools",
+          "query": {},
+          "limit": 1000,
+          "offset": 0,
+          "indexes": [
+            {
+              "index": "_id",
+              "descending": false
+            }
+          ]
+        },
+        "row_count": 34,
+        "contains_batch296": null
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "marketpools",
+          "table": "liquidityPositions",
+          "query": {
+            "tokenPair": "HSBIDAO:PIXYDUST"
+          },
+          "limit": 1000,
+          "offset": 0,
+          "indexes": [
+            {
+              "index": "_id",
+              "descending": false
+            }
+          ]
+        },
+        "row_count": 20,
+        "contains_batch296": null
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "marketpools",
+          "table": "liquidityPositions",
+          "query": {
+            "tokenPair": "ALIVE:HEARTBEAT"
+          },
+          "limit": 1000,
+          "offset": 0,
+          "indexes": [
+            {
+              "index": "_id",
+              "descending": false
+            }
+          ]
+        },
+        "row_count": 28,
+        "contains_batch296": null
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "marketpools",
+          "table": "liquidityPositions",
+          "query": {
+            "tokenPair": "ALIVE:SWAP.HIVE"
+          },
+          "limit": 1000,
+          "offset": 0,
+          "indexes": [
+            {
+              "index": "_id",
+              "descending": false
+            }
+          ]
+        },
+        "row_count": 39,
+        "contains_batch296": null
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "marketpools",
+          "table": "liquidityPositions",
+          "query": {
+            "tokenPair": "BBH:SWAP.HIVE"
+          },
+          "limit": 1000,
+          "offset": 0,
+          "indexes": [
+            {
+              "index": "_id",
+              "descending": false
+            }
+          ]
+        },
+        "row_count": 26,
+        "contains_batch296": null
+      },
+      {
+        "method": "find",
+        "params": {
+          "contract": "marketpools",
+          "table": "pools",
+          "query": {},
+          "limit": 1000
+        },
+        "row_count": 346,
+        "contains_batch296": null
+      }
+    ]
+  }
+]

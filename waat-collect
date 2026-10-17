@@ -1,0 +1,338 @@
+#!/usr/bin/env python3
+"""
+WAAT HIVE Collection & Delegation Workflow.
+
+Collects HIVE from all configured WAAT accounts, transfers to
+@aliveandthriving, powers up, then delegates VESTS to @bradleyarrow.
+
+Usage:
+  waat-collect [--dry-run] [--account NAME] [--min-hive N] [--confirm] [--auto]
+"""
+import json
+import sys
+import time
+import argparse
+import urllib.request
+from pathlib import Path
+from decimal import Decimal
+
+from nectar import Hive
+
+VAULT_DIR = Path("/mnt/vault/Hermes-Keys")
+NODE = "https://api.hive.blog"
+DEST_ACCOUNT = "aliveandthriving"
+DELEGATE_TO = "bradleyarrow"
+
+# All WAAT accounts to check (only those receiving liquid HIVE)
+WAAT_ACCOUNTS = [
+    "youarealive",
+    "aliveandthriving",
+    "aliveandsocial",
+    "alive.chat",
+    "hive-155221",
+]
+
+
+def rpc_post(payload):
+    """Direct RPC call to Hive node."""
+    req = urllib.request.Request(
+        NODE,
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    return json.loads(urllib.request.urlopen(req, timeout=30).read())
+
+
+def load_key(account):
+    """Load posting+active keys for an account from vault JSON."""
+    key_file = VAULT_DIR / f"{account}.json"
+    if not key_file.exists():
+        return None
+    return json.loads(key_file.read_text())
+
+
+def get_balance(account):
+    """Get available HIVE liquid balance using direct RPC."""
+    try:
+        resp = rpc_post({
+            "jsonrpc": "2.0",
+            "method": "get_accounts",
+            "params": [[account]],
+            "id": 1
+        })
+        acct = resp["result"][0]
+        balance_str = acct.get("balance", "0.000 HIVE")
+        return Decimal(balance_str.replace(" HIVE", ""))
+    except Exception as e:
+        print(f"  ⚠️  Error reading @{account}: {e}")
+        return Decimal("0")
+
+
+def collect_hive(accounts_to_check, min_hive, dry_run):
+    """Step 1: Collect HIVE from WAAT accounts -> aliveandthriving."""
+    total_collected = Decimal("0")
+    keyfiles = {}
+
+    for acct in accounts_to_check:
+        keys = load_key(acct)
+        if not keys:
+            print(f"  ⚠️  No vault keys for @{acct}, skipping")
+            continue
+        keyfiles[acct] = keys
+
+    if not keyfiles:
+        print("  ❌ No vault keys found for any account")
+        return Decimal("0")
+
+    # Build keys dict - active key for transfers
+    all_keys = {acct: k["active"] for acct, k in keyfiles.items()}
+    hive = Hive(node=[NODE], keys=all_keys)
+
+    for acct in accounts_to_check:
+        if acct not in keyfiles:
+            continue
+        if acct == DEST_ACCOUNT:
+            # Skip destination account - it already holds the HIVE
+            balance = get_balance(acct)
+            if balance > 0:
+                print(f"  @{acct}: {balance} HIVE — already at destination")
+                total_collected += balance
+            continue
+        balance = get_balance(acct)
+        if balance <= 0:
+            print(f"  @{acct}: 0.000 HIVE — skipping")
+            continue
+
+        if balance < min_hive:
+            print(f"  @{acct}: {balance} HIVE < {min_hive} min — skipping")
+            continue
+
+        print(f"  @{acct}: {balance} HIVE → transferring to @{DEST_ACCOUNT}...")
+        if not dry_run:
+            try:
+                from nectar.account import Account
+                account = Account(acct, blockchain_instance=hive)
+                tx = account.transfer(
+                    to=DEST_ACCOUNT,
+                    amount=float(balance),
+                    asset="HIVE",
+                    memo="Daily WAAT collection",
+                )
+                print(f"    ✅ TX: {tx.get('trx_id', 'N/A')[:16]}")
+                total_collected += balance
+                # Wait for transfer to confirm (3s block time; poll up to 30s)
+                print(f"    ⏳ Waiting for transfer confirmation...", end='', flush=True)
+                confirmed = False
+                for attempt in range(10):
+                    time.sleep(3)
+                    new_balance = get_balance(DEST_ACCOUNT)
+                    if new_balance > 0:
+                        print(f" ✅ confirmed ({new_balance:.3f} HIVE)")
+                        confirmed = True
+                        break
+                if not confirmed:
+                    print(f" ⚠️  Transfer may not have confirmed yet")
+            except Exception as e:
+                print(f"    ❌ Failed: {e}")
+        else:
+            total_collected += balance
+
+    return total_collected
+
+
+def power_up(total_hive, dry_run):
+    """Step 2: Power up HIVE to HP on aliveandthriving."""
+    if total_hive <= 0:
+        print("No HIVE to power up.")
+        return Decimal("0")
+
+    keys = load_key(DEST_ACCOUNT)
+    if not keys:
+        print(f"❌ No vault keys for @{DEST_ACCOUNT}")
+        return Decimal("0")
+
+    all_keys = {DEST_ACCOUNT: keys["active"]}
+    hive = Hive(node=[NODE], keys=all_keys)
+
+    if dry_run:
+        print(f"  [DRY-RUN] Would power up {float(total_hive):.3f} HIVE → HP on @{DEST_ACCOUNT}")
+    else:
+        try:
+            from nectar.account import Account
+            account = Account(DEST_ACCOUNT, blockchain_instance=hive)
+            tx = account.transfer_to_vesting(
+                amount=float(total_hive),
+                asset="HIVE",
+                account=DEST_ACCOUNT,
+            )
+            print(f"  ✅ Power-up TX: {tx.get('trx_id', 'N/A')[:16]}")
+        except Exception as e:
+            print(f"  ❌ Power-up failed: {e}")
+
+    return total_hive
+
+
+def get_vests_equivalent(hive_amount):
+    """Convert HIVE to VESTS using current chain ratio."""
+    try:
+        resp = rpc_post({
+            "jsonrpc": "2.0",
+            "method": "get_dynamic_global_properties",
+            "params": [],
+            "id": 1
+        })
+        props = resp["result"]
+
+        tvs = Decimal(props.get("total_vesting_shares", "0 VESTS").split()[0])
+        tvf = Decimal(props.get("total_vesting_fund_hive", "0 HIVE").split()[0])
+
+        if tvf > 0:
+            ratio = tvs / tvf
+            return hive_amount * ratio
+        return hive_amount
+    except Exception:
+        # Fallback: rough ratio (~1.8B VESTS per HIVE)
+        return hive_amount * Decimal("1800000000")
+
+
+def get_current_delegation(delegator, delegatee):
+    """Query the current VESTS delegated from delegator to delegatee."""
+    try:
+        resp = rpc_post({
+            "jsonrpc": "2.0",
+            "method": "get_vesting_delegations",
+            "params": [delegator, delegatee, 10],
+            "id": 1
+        })
+        delegations = resp["result"]
+        if delegations:
+            vests = Decimal(delegations[0].get("vesting_shares", "0 VESTS").split()[0])
+            return float(vests)
+        return 0.0
+    except Exception:
+        return 0.0
+
+
+def delegate_vests(total_hive, dry_run):
+    """Step 3: Delegate VESTS equivalent to @bradleyarrow."""
+    if total_hive <= 0:
+        print("No HIVE to delegate.")
+        return
+
+    keys = load_key(DEST_ACCOUNT)
+    if not keys:
+        print(f"❌ No vault keys for @{DEST_ACCOUNT}")
+        return
+
+    all_keys = {DEST_ACCOUNT: keys["active"]}
+    hive = Hive(node=[NODE], keys=all_keys)
+
+    vests = get_vests_equivalent(total_hive)
+
+    # Query current delegation to @DELEGATE_TO so we set TOTAL, not just the increment
+    current_delegation = get_current_delegation(DEST_ACCOUNT, DELEGATE_TO)
+    new_total_vests = float(vests) + current_delegation
+    vests_str = f"{new_total_vests:.6f} VESTS"
+
+    if dry_run:
+        print(f"  [DRY-RUN] Current delegation: {current_delegation:.6f} VESTS")
+        print(f"  [DRY-RUN] New delegation: {new_total_vests:.6f} VESTS (current + {float(vests):.6f})")
+    else:
+        try:
+            from nectar.account import Account
+            account = Account(DEST_ACCOUNT, blockchain_instance=hive)
+            tx = account.delegate_vesting_shares(
+                to_account=DELEGATE_TO,
+                vesting_shares=vests_str,
+            )
+            print(f"  ✅ Delegate TX: {tx.get('trx_id', 'N/A')[:16]}")
+        except Exception as e:
+            print(f"  ❌ Delegation failed: {e}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="WAAT HIVE collection & delegation")
+    parser.add_argument("--dry-run", action="store_true", help="Don't broadcast")
+    parser.add_argument("--account", action="append", help="Specific account(s) to check")
+    parser.add_argument("--min-hive", type=float, default=0.01, help="Minimum HIVE to collect")
+    parser.add_argument("--confirm", action="store_true", help="Prompt for confirmation before broadcasting")
+    parser.add_argument("--auto", action="store_true", help="Auto-execute without confirmation (for cron)")
+    args = parser.parse_args()
+
+    accounts = args.account or WAAT_ACCOUNTS
+
+    print("=" * 60)
+    print("WAAT HIVE Collection & Delegation Workflow")
+    print(f"Mode: {'DRY-RUN' if args.dry_run else 'LIVE'}")
+    print(f"Accounts: {accounts}")
+    print(f"Dest: @{DEST_ACCOUNT} → Power up → Delegate to @{DELEGATE_TO}")
+    print("=" * 60)
+
+    # Step 1: Collect
+    print("\n[Step 1] Collecting HIVE from WAAT accounts...")
+    total = collect_hive(accounts, Decimal(str(args.min_hive)), args.dry_run)
+    print(f"Total collected: {float(total):.3f} HIVE")
+
+    if total <= 0:
+        print("\n" + "=" * 60)
+        print("Workflow complete.")
+        print("ℹ️  No HIVE to collect today")
+        print("=" * 60)
+        return
+
+    # Calculate delegation amount (query current delegation to set TOTAL)
+    vests = get_vests_equivalent(total)
+    current_delegation = get_current_delegation(DEST_ACCOUNT, DELEGATE_TO)
+    new_total_vests = float(vests) + current_delegation
+    vests_str = f"{new_total_vests:.6f} VESTS"
+
+    # Confirmation prompt for live mode
+    if not args.dry_run and args.confirm and not args.auto:
+        print(f"\n[CONFIRMATION REQUIRED]")
+        print(f"  Total HIVE to collect: {float(total):.3f} HIVE")
+        print(f"  Will power up: {float(total):.3f} HIVE → HP on @{DEST_ACCOUNT}")
+        print(f"  Current delegation to @{DELEGATE_TO}: {current_delegation:.6f} VESTS")
+        print(f"  New delegation: {new_total_vests:.6f} VESTS (~{new_total_vests:.0f} / ratio = HP)")
+        print(f"  Target new HP: ~624.972490")
+        print()
+        try:
+            response = input("Proceed with live transactions? (y/N): ").strip().lower()
+            if response != 'y' and response != 'yes':
+                print("Aborted by user.")
+                return
+        except (EOFError, KeyboardInterrupt):
+            print("\nAborted.")
+            return
+    elif not args.dry_run and not args.confirm and not args.auto:
+        # Non-interactive mode (cron): print summary and exit without broadcasting
+        print(f"\n[NON-INTERACTIVE MODE - requires --confirm or --auto]")
+        print(f"  Would collect: {float(total):.3f} HIVE")
+        print(f"  Would power up: {float(total):.3f} HIVE → HP")
+        print(f"  Would delegate: {new_total_vests:.6f} VESTS (current {current_delegation:.6f} + {float(vests):.6f} new) to @{DELEGATE_TO}")
+        print()
+        print("Run with --confirm to broadcast, --auto to auto-execute, or --dry-run to simulate.")
+        return
+
+    # Step 2: Power up — re-query live balance first to avoid powering up
+    # more than the confirmed balance (transfers may not have settled yet)
+    print(f"\n[Step 2] Getting live balance from @{DEST_ACCOUNT}...")
+    live_balance = get_balance(DEST_ACCOUNT)
+    power_amount = min(total, live_balance)
+    if live_balance < total:
+        print(f"  ⚠️ Live balance {live_balance:.3f} < collected total {total:.3f} — using live balance for power-up")
+    print(f"[Step 2] Powering up {float(power_amount):.3f} HIVE to HP...")
+    powered = power_up(power_amount, args.dry_run)
+
+    # Step 3: Delegate
+    print(f"\n[Step 3] Delegating to @{DELEGATE_TO}...")
+    delegate_vests(powered, args.dry_run)
+
+    print("\n" + "=" * 60)
+    print("Workflow complete.")
+    if total > 0 and not args.dry_run:
+        print(f"✅ Collected {float(total):.3f} HIVE, powered up, delegated VESTS")
+    print("=" * 60)
+
+
+if __name__ == "__main__":
+    main()

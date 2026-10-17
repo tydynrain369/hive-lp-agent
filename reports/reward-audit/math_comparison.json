@@ -1,0 +1,638 @@
+[
+  {
+    "name": "baseline_synthetic",
+    "entitlement_match": true,
+    "python": {
+      "status": "ok",
+      "batch_id": 1,
+      "account": "hermes-sandbox",
+      "eligible": true,
+      "entitlements": [
+        {
+          "symbol": "TEST",
+          "payout_share": "13.94150768",
+          "unfloored_estimate": "13.94150768722807634882",
+          "rounded_zero": false,
+          "share_total": "16.08641974330864197417",
+          "tick_budget": "176.36684144571428571429"
+        }
+      ],
+      "reason": "eligible",
+      "source": {
+        "file": "contracts/distribution.js",
+        "url": "https://raw.githubusercontent.com/hive-engine/hivesmartcontracts/master/contracts/distribution.js",
+        "limitation": "Public upstream source, not verified deployed parity; complete participant snapshot required"
+      },
+      "basis": "conditional single-tick estimate, not observed earnings",
+      "effective_shares": "1.27160492682716049267",
+      "share_total": "16.08641974330864197417",
+      "bonus_multiplier": "1.03",
+      "ticks_remaining": 7,
+      "tick_interval_ms": "86400000"
+    },
+    "deployed_immediate": [
+      {
+        "distId": 1,
+        "tokenPair": "X:Y",
+        "symbol": "TEST",
+        "account": "hermes-sandbox",
+        "quantity": "13.94150768"
+      }
+    ],
+    "deployed_queued": [],
+    "deployed_errors": []
+  },
+  {
+    "name": "immature",
+    "entitlement_match": true,
+    "python": {
+      "status": "ok",
+      "batch_id": 1,
+      "account": "hermes-sandbox",
+      "eligible": false,
+      "entitlements": [
+        {
+          "symbol": "TEST",
+          "payout_share": "0",
+          "unfloored_estimate": "0",
+          "rounded_zero": false,
+          "share_total": "14.8148148164814814815",
+          "tick_budget": "176.36684144571428571429"
+        }
+      ],
+      "reason": "excluded, immature, absent, or no eligible shares",
+      "source": {
+        "file": "contracts/distribution.js",
+        "url": "https://raw.githubusercontent.com/hive-engine/hivesmartcontracts/master/contracts/distribution.js",
+        "limitation": "Public upstream source, not verified deployed parity; complete participant snapshot required"
+      },
+      "basis": "conditional single-tick estimate, not observed earnings",
+      "effective_shares": "0",
+      "share_total": "14.8148148164814814815",
+      "bonus_multiplier": null,
+      "ticks_remaining": 7,
+      "tick_interval_ms": "86400000"
+    },
+    "deployed_immediate": [],
+    "deployed_queued": [],
+    "deployed_errors": []
+  },
+  {
+    "name": "exact_tick",
+    "entitlement_match": true,
+    "python": {
+      "status": "ok",
+      "batch_id": 1,
+      "account": "hermes-sandbox",
+      "eligible": true,
+      "entitlements": [
+        {
+          "symbol": "TEST",
+          "payout_share": "13.56667999",
+          "unfloored_estimate": "13.56667999709213957885",
+          "rounded_zero": false,
+          "share_total": "16.0493827066049382705",
+          "tick_budget": "176.36684144571428571429"
+        }
+      ],
+      "reason": "eligible",
+      "source": {
+        "file": "contracts/distribution.js",
+        "url": "https://raw.githubusercontent.com/hive-engine/hivesmartcontracts/master/contracts/distribution.js",
+        "limitation": "Public upstream source, not verified deployed parity; complete participant snapshot required"
+      },
+      "basis": "conditional single-tick estimate, not observed earnings",
+      "effective_shares": "1.234567890123456789",
+      "share_total": "16.0493827066049382705",
+      "bonus_multiplier": "1",
+      "ticks_remaining": 7,
+      "tick_interval_ms": "86400000"
+    },
+    "deployed_immediate": [
+      {
+        "distId": 1,
+        "tokenPair": "X:Y",
+        "symbol": "TEST",
+        "account": "hermes-sandbox",
+        "quantity": "13.56667999"
+      }
+    ],
+    "deployed_queued": [],
+    "deployed_errors": []
+  },
+  {
+    "name": "tick_plus_one",
+    "entitlement_match": true,
+    "python": {
+      "status": "ok",
+      "batch_id": 1,
+      "account": "hermes-sandbox",
+      "eligible": true,
+      "entitlements": [
+        {
+          "symbol": "TEST",
+          "payout_share": "13.69181463",
+          "unfloored_estimate": "13.69181463205007570639",
+          "rounded_zero": false,
+          "share_total": "16.06172838550617283839",
+          "tick_budget": "176.36684144571428571429"
+        }
+      ],
+      "reason": "eligible",
+      "source": {
+        "file": "contracts/distribution.js",
+        "url": "https://raw.githubusercontent.com/hive-engine/hivesmartcontracts/master/contracts/distribution.js",
+        "limitation": "Public upstream source, not verified deployed parity; complete participant snapshot required"
+      },
+      "basis": "conditional single-tick estimate, not observed earnings",
+      "effective_shares": "1.24691356902469135689",
+      "share_total": "16.06172838550617283839",
+      "bonus_multiplier": "1.01",
+      "ticks_remaining": 7,
+      "tick_interval_ms": "86400000"
+    },
+    "deployed_immediate": [
+      {
+        "distId": 1,
+        "tokenPair": "X:Y",
+        "symbol": "TEST",
+        "account": "hermes-sandbox",
+        "quantity": "13.69181463"
+      }
+    ],
+    "deployed_queued": [],
+    "deployed_errors": []
+  },
+  {
+    "name": "fractional_timeFactor",
+    "entitlement_match": true,
+    "python": {
+      "status": "ok",
+      "batch_id": 1,
+      "account": "hermes-sandbox",
+      "eligible": true,
+      "entitlements": [
+        {
+          "symbol": "TEST",
+          "payout_share": "13.94150768",
+          "unfloored_estimate": "13.94150768722807634882",
+          "rounded_zero": false,
+          "share_total": "16.08641974330864197417",
+          "tick_budget": "176.36684144571428571429"
+        }
+      ],
+      "reason": "eligible",
+      "source": {
+        "file": "contracts/distribution.js",
+        "url": "https://raw.githubusercontent.com/hive-engine/hivesmartcontracts/master/contracts/distribution.js",
+        "limitation": "Public upstream source, not verified deployed parity; complete participant snapshot required"
+      },
+      "basis": "conditional single-tick estimate, not observed earnings",
+      "effective_shares": "1.27160492682716049267",
+      "share_total": "16.08641974330864197417",
+      "bonus_multiplier": "1.03",
+      "ticks_remaining": 7,
+      "tick_interval_ms": "86400000"
+    },
+    "deployed_immediate": [
+      {
+        "distId": 1,
+        "tokenPair": "X:Y",
+        "symbol": "TEST",
+        "account": "hermes-sandbox",
+        "quantity": "13.94150768"
+      }
+    ],
+    "deployed_queued": [],
+    "deployed_errors": []
+  },
+  {
+    "name": "bonus_cap",
+    "entitlement_match": true,
+    "python": {
+      "status": "ok",
+      "batch_id": 1,
+      "account": "hermes-sandbox",
+      "eligible": true,
+      "entitlements": [
+        {
+          "symbol": "TEST",
+          "payout_share": "25.19526286",
+          "unfloored_estimate": "25.19526286688046798963",
+          "rounded_zero": false,
+          "share_total": "17.2839505967283950595",
+          "tick_budget": "176.36684144571428571429"
+        }
+      ],
+      "reason": "eligible",
+      "source": {
+        "file": "contracts/distribution.js",
+        "url": "https://raw.githubusercontent.com/hive-engine/hivesmartcontracts/master/contracts/distribution.js",
+        "limitation": "Public upstream source, not verified deployed parity; complete participant snapshot required"
+      },
+      "basis": "conditional single-tick estimate, not observed earnings",
+      "effective_shares": "2.469135780246913578",
+      "share_total": "17.2839505967283950595",
+      "bonus_multiplier": "2",
+      "ticks_remaining": 7,
+      "tick_interval_ms": "86400000"
+    },
+    "deployed_immediate": [
+      {
+        "distId": 1,
+        "tokenPair": "X:Y",
+        "symbol": "TEST",
+        "account": "hermes-sandbox",
+        "quantity": "25.19526286"
+      }
+    ],
+    "deployed_queued": [],
+    "deployed_errors": []
+  },
+  {
+    "name": "numeric_periods_curve_disabled",
+    "entitlement_match": true,
+    "python": {
+      "status": "ok",
+      "batch_id": 1,
+      "account": "hermes-sandbox",
+      "eligible": true,
+      "entitlements": [
+        {
+          "symbol": "TEST",
+          "payout_share": "19.59631555",
+          "unfloored_estimate": "19.59631555746031873041",
+          "rounded_zero": false,
+          "share_total": "11.11111110111111111",
+          "tick_budget": "176.36684144571428571429"
+        }
+      ],
+      "reason": "eligible",
+      "source": {
+        "file": "contracts/distribution.js",
+        "url": "https://raw.githubusercontent.com/hive-engine/hivesmartcontracts/master/contracts/distribution.js",
+        "limitation": "Public upstream source, not verified deployed parity; complete participant snapshot required"
+      },
+      "basis": "conditional single-tick estimate, not observed earnings",
+      "effective_shares": "1.234567890123456789",
+      "share_total": "11.11111110111111111",
+      "bonus_multiplier": "1",
+      "ticks_remaining": 7,
+      "tick_interval_ms": "86400000"
+    },
+    "deployed_immediate": [
+      {
+        "distId": 1,
+        "tokenPair": "X:Y",
+        "symbol": "TEST",
+        "account": "hermes-sandbox",
+        "quantity": "19.59631555"
+      }
+    ],
+    "deployed_queued": [],
+    "deployed_errors": []
+  },
+  {
+    "name": "excluded_denominator",
+    "entitlement_match": true,
+    "python": {
+      "status": "ok",
+      "batch_id": 1,
+      "account": "hermes-sandbox",
+      "eligible": true,
+      "entitlements": [
+        {
+          "symbol": "TEST",
+          "payout_share": "176.36684144",
+          "unfloored_estimate": "176.36684144571428571429",
+          "rounded_zero": false,
+          "share_total": "1.27160492682716049267",
+          "tick_budget": "176.36684144571428571429"
+        }
+      ],
+      "reason": "eligible",
+      "source": {
+        "file": "contracts/distribution.js",
+        "url": "https://raw.githubusercontent.com/hive-engine/hivesmartcontracts/master/contracts/distribution.js",
+        "limitation": "Public upstream source, not verified deployed parity; complete participant snapshot required"
+      },
+      "basis": "conditional single-tick estimate, not observed earnings",
+      "effective_shares": "1.27160492682716049267",
+      "share_total": "1.27160492682716049267",
+      "bonus_multiplier": "1.03",
+      "ticks_remaining": 7,
+      "tick_interval_ms": "86400000"
+    },
+    "deployed_immediate": [
+      {
+        "distId": 1,
+        "tokenPair": "X:Y",
+        "symbol": "TEST",
+        "account": "hermes-sandbox",
+        "quantity": "176.36684144"
+      }
+    ],
+    "deployed_queued": [],
+    "deployed_errors": []
+  },
+  {
+    "name": "rounded_zero",
+    "entitlement_match": true,
+    "python": {
+      "status": "ok",
+      "batch_id": 1,
+      "account": "hermes-sandbox",
+      "eligible": true,
+      "entitlements": [
+        {
+          "symbol": "TEST",
+          "payout_share": "0",
+          "unfloored_estimate": "0.00000000011292621328",
+          "rounded_zero": true,
+          "share_total": "16.08641974330864197417",
+          "tick_budget": "0.00000000142857142857"
+        }
+      ],
+      "reason": "eligible",
+      "source": {
+        "file": "contracts/distribution.js",
+        "url": "https://raw.githubusercontent.com/hive-engine/hivesmartcontracts/master/contracts/distribution.js",
+        "limitation": "Public upstream source, not verified deployed parity; complete participant snapshot required"
+      },
+      "basis": "conditional single-tick estimate, not observed earnings",
+      "effective_shares": "1.27160492682716049267",
+      "share_total": "16.08641974330864197417",
+      "bonus_multiplier": "1.03",
+      "ticks_remaining": 7,
+      "tick_interval_ms": "86400000"
+    },
+    "deployed_immediate": [],
+    "deployed_queued": [],
+    "deployed_errors": []
+  },
+  {
+    "name": "queued_payment",
+    "entitlement_match": true,
+    "python": {
+      "status": "ok",
+      "batch_id": 1,
+      "account": "hermes-sandbox",
+      "eligible": true,
+      "entitlements": [
+        {
+          "symbol": "TEST",
+          "payout_share": "13.94150768",
+          "unfloored_estimate": "13.94150768722807634882",
+          "rounded_zero": false,
+          "share_total": "16.08641974330864197417",
+          "tick_budget": "176.36684144571428571429"
+        }
+      ],
+      "reason": "eligible",
+      "source": {
+        "file": "contracts/distribution.js",
+        "url": "https://raw.githubusercontent.com/hive-engine/hivesmartcontracts/master/contracts/distribution.js",
+        "limitation": "Public upstream source, not verified deployed parity; complete participant snapshot required"
+      },
+      "basis": "conditional single-tick estimate, not observed earnings",
+      "effective_shares": "1.27160492682716049267",
+      "share_total": "16.08641974330864197417",
+      "bonus_multiplier": "1.03",
+      "ticks_remaining": 7,
+      "tick_interval_ms": "86400000"
+    },
+    "deployed_immediate": [],
+    "deployed_queued": [
+      {
+        "distId": 1,
+        "account": "hermes-sandbox",
+        "symbol": "TEST",
+        "quantity": "13.94150768"
+      }
+    ],
+    "deployed_errors": []
+  },
+  {
+    "name": "zero_pool_guard_difference",
+    "entitlement_match": false,
+    "python": {
+      "status": "ok",
+      "batch_id": 1,
+      "account": "hermes-sandbox",
+      "eligible": true,
+      "entitlements": [
+        {
+          "symbol": "TEST",
+          "payout_share": "13.94150768",
+          "unfloored_estimate": "13.94150768722807634882",
+          "rounded_zero": false,
+          "share_total": "16.08641974330864197417",
+          "tick_budget": "176.36684144571428571429"
+        }
+      ],
+      "reason": "eligible",
+      "source": {
+        "file": "contracts/distribution.js",
+        "url": "https://raw.githubusercontent.com/hive-engine/hivesmartcontracts/master/contracts/distribution.js",
+        "limitation": "Public upstream source, not verified deployed parity; complete participant snapshot required"
+      },
+      "basis": "conditional single-tick estimate, not observed earnings",
+      "effective_shares": "1.27160492682716049267",
+      "share_total": "16.08641974330864197417",
+      "bonus_multiplier": "1.03",
+      "ticks_remaining": 7,
+      "tick_interval_ms": "86400000"
+    },
+    "deployed_immediate": [],
+    "deployed_queued": [],
+    "deployed_errors": [
+      "no liquidity shares for this tokenPair"
+    ]
+  },
+  {
+    "name": "earlier_live_snapshot_at_calculation_time_NOT_exact_reconciliation",
+    "entitlement_match": true,
+    "python": {
+      "status": "ok",
+      "batch_id": 296,
+      "account": "hermes-sandbox",
+      "eligible": true,
+      "entitlements": [
+        {
+          "symbol": "SWAP.HIVE",
+          "payout_share": "0.00000002",
+          "unfloored_estimate": "0.0000000266520961522",
+          "rounded_zero": false,
+          "share_total": "10540.5565056057907206193423",
+          "tick_budget": "0.06726676439065108514"
+        },
+        {
+          "symbol": "GLITTER",
+          "payout_share": "0.00001541",
+          "unfloored_estimate": "0.00001541711973853387",
+          "rounded_zero": false,
+          "share_total": "10540.5565056057907206193423",
+          "tick_budget": "38.91100178808013355593"
+        },
+        {
+          "symbol": "WAIV",
+          "payout_share": "0.00000005",
+          "unfloored_estimate": "0.00000005903526624273",
+          "rounded_zero": false,
+          "share_total": "10540.5565056057907206193423",
+          "tick_budget": "0.14899808714524207012"
+        },
+        {
+          "symbol": "SLOTHBUZZ",
+          "payout_share": "0",
+          "unfloored_estimate": "0.00000000742033555921",
+          "rounded_zero": true,
+          "share_total": "10540.5565056057907206193423",
+          "tick_budget": "0.01872805654424040067"
+        },
+        {
+          "symbol": "PIMP",
+          "payout_share": "0.00002561",
+          "unfloored_estimate": "0.00002561831529131887",
+          "rounded_zero": false,
+          "share_total": "10540.5565056057907206193423",
+          "tick_budget": "64.65762276053422370618"
+        },
+        {
+          "symbol": "POKEMON",
+          "payout_share": "0.00000039",
+          "unfloored_estimate": "0.00000039648970273098",
+          "rounded_zero": false,
+          "share_total": "10540.5565056057907206193423",
+          "tick_budget": "1.00069350135225375626"
+        },
+        {
+          "symbol": "PEPENTROPY",
+          "payout_share": "0",
+          "unfloored_estimate": "0.00000543241819909796",
+          "rounded_zero": true,
+          "share_total": "10540.5565056057907206193423",
+          "tick_budget": "13.71078631051752921536"
+        },
+        {
+          "symbol": "THREE",
+          "payout_share": "714.67226091",
+          "unfloored_estimate": "714.67226091248715306702",
+          "rounded_zero": false,
+          "share_total": "10540.5565056057907206193423",
+          "tick_budget": "1803748955.30918305782971619366"
+        },
+        {
+          "symbol": "PIXYDUST",
+          "payout_share": "0.00000022",
+          "unfloored_estimate": "0.00000022519893346984",
+          "rounded_zero": false,
+          "share_total": "10540.5565056057907206193423",
+          "tick_budget": "0.56837569218697829716"
+        },
+        {
+          "symbol": "LBI",
+          "payout_share": "0",
+          "unfloored_estimate": "0.00000000933704420688",
+          "rounded_zero": true,
+          "share_total": "10540.5565056057907206193423",
+          "tick_budget": "0.02356560434056761269"
+        },
+        {
+          "symbol": "BBHO",
+          "payout_share": "0",
+          "unfloored_estimate": "0.00000000942050123903",
+          "rounded_zero": true,
+          "share_total": "10540.5565056057907206193423",
+          "tick_budget": "0.02377624010016694491"
+        },
+        {
+          "symbol": "LIMITLESS",
+          "payout_share": "0.00000057",
+          "unfloored_estimate": "0.00000057009342586844",
+          "rounded_zero": false,
+          "share_total": "10540.5565056057907206193423",
+          "tick_budget": "1.43884893479131886477"
+        },
+        {
+          "symbol": "PEPE",
+          "payout_share": "0.00006709",
+          "unfloored_estimate": "0.00006709796032774662",
+          "rounded_zero": false,
+          "share_total": "10540.5565056057907206193423",
+          "tick_budget": "169.34738125979966611018"
+        }
+      ],
+      "reason": "eligible",
+      "source": {
+        "file": "contracts/distribution.js",
+        "url": "https://raw.githubusercontent.com/hive-engine/hivesmartcontracts/master/contracts/distribution.js",
+        "limitation": "Public upstream source, not verified deployed parity; complete participant snapshot required"
+      },
+      "basis": "conditional single-tick estimate, not observed earnings",
+      "effective_shares": "0.0041763258279176400356",
+      "share_total": "10540.5565056057907206193423",
+      "bonus_multiplier": "1.06",
+      "ticks_remaining": 599,
+      "tick_interval_ms": "86400000"
+    },
+    "deployed_immediate": [],
+    "deployed_queued": [
+      {
+        "distId": 296,
+        "account": "hermes-sandbox",
+        "symbol": "SWAP.HIVE",
+        "quantity": "0.00000002"
+      },
+      {
+        "distId": 296,
+        "account": "hermes-sandbox",
+        "symbol": "GLITTER",
+        "quantity": "0.00001541"
+      },
+      {
+        "distId": 296,
+        "account": "hermes-sandbox",
+        "symbol": "WAIV",
+        "quantity": "0.00000005"
+      },
+      {
+        "distId": 296,
+        "account": "hermes-sandbox",
+        "symbol": "PIMP",
+        "quantity": "0.00002561"
+      },
+      {
+        "distId": 296,
+        "account": "hermes-sandbox",
+        "symbol": "POKEMON",
+        "quantity": "0.00000039"
+      },
+      {
+        "distId": 296,
+        "account": "hermes-sandbox",
+        "symbol": "THREE",
+        "quantity": "714.67226091"
+      },
+      {
+        "distId": 296,
+        "account": "hermes-sandbox",
+        "symbol": "PIXYDUST",
+        "quantity": "0.00000022"
+      },
+      {
+        "distId": 296,
+        "account": "hermes-sandbox",
+        "symbol": "LIMITLESS",
+        "quantity": "0.00000057"
+      },
+      {
+        "distId": 296,
+        "account": "hermes-sandbox",
+        "symbol": "PEPE",
+        "quantity": "0.00006709"
+      }
+    ],
+    "deployed_errors": []
+  }
+]

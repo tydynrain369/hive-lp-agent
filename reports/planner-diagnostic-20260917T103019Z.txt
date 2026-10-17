@@ -1,0 +1,204 @@
+LIVE READ-ONLY PLANNER DIAGNOSTIC 20260917T103019Z
+Account: hermes-sandbox. Corrected indicative valuation; no sale quote claimed.
+No keys loaded; no agent executor; no tracker or database writes.
+  PriceEngine: 338 pools, 194 indicative marks; SWAP.HBD numeraire
+[VALUATION] HSBIDAO:PIXYDUST: token_price_mark=0.00020448707890934515 timeFactor=1789078197000
+[VALUATION] ALIVE:HEARTBEAT: token_price_mark=0.00012045478986333813 timeFactor=1789083582972
+[VALUATION] ALIVE:SWAP.HIVE: token_price_mark=7.173982596377859e-05 timeFactor=1789083477000
+[VALUATION] BBH:SWAP.HIVE: token_price_mark=0.0001265845785585658 timeFactor=1789265476814
+VALUATION SUMMARY: {"basis": "indicative reserve-ratio marks; not executable sale quotes", "liquid_known_mark": 0.002083583677953274, "lp_known_mark": 0.0005232662732950277, "staked_known_mark": 0.00018722728152409583, "unpriced_liquid": ["GLITTER", "GROWTH", "STR", "HOP", "WRD", "IDD", "BBHO", "POKEMON", "SWAP.PEPE", "SWAP.PEPET"], "unpriced_staked": ["GROWTH", "BBHO"], "unpriced_positions": []}
+Loaded positions: 4
+  DEBUG: distribution contract returned 245 pools
+  DEBUG: total reward_discovery entries: 76 pools
+  Scanning positions for management actions...
+  [DIAGNOSTIC] Existing allocation rules; values below are planner inputs, not verified earnings.
+  [INPUT position] HSBIDAO:PIXYDUST shares=0.003939930026337396 value_usd=0.00020448707890934515
+  [GATE] HSBIDAO:PIXYDUST: ordinary exit assessment skipped: value_usd <= 1.0 (legacy rule; zombie check separate)
+  [INPUT position] ALIVE:HEARTBEAT shares=0.31767319559748186 value_usd=0.00012045478986333813
+  [GATE] ALIVE:HEARTBEAT: ordinary exit assessment skipped: value_usd <= 1.0 (legacy rule; zombie check separate)
+  [INPUT position] ALIVE:SWAP.HIVE shares=0.006637234555944471 value_usd=7.173982596377859e-05
+  [GATE] ALIVE:SWAP.HIVE: ordinary exit assessment skipped: value_usd <= 1.0 (legacy rule; zombie check separate)
+  [INPUT position] BBH:SWAP.HIVE shares=0.01746238125526003 value_usd=0.0001265845785585658
+  [GATE] BBH:SWAP.HIVE: ordinary exit assessment skipped: value_usd <= 1.0 (legacy rule; zombie check separate)
+  [INPUT balance] HH liquid=0.353 legacy_value_usd=3.2371654422805637e-07
+  [INPUT balance] PSX liquid=1.00886928 legacy_value_usd=0.00013254471329089874
+  [INPUT balance] GLITTER liquid=7.489e-05 legacy_value_usd=None
+  [INPUT balance] SWAP.HIVE liquid=0.00017032 legacy_value_usd=8.72268790075735e-06
+  [INPUT balance] CENT liquid=15.01273482 legacy_value_usd=0.0007855454030172824
+  [INPUT balance] POB liquid=1.96463404 legacy_value_usd=0.00041485355026594427
+  [INPUT balance] UNICOIN liquid=0.004 legacy_value_usd=0.000206451802172882
+  [INPUT balance] PIXYDUST liquid=3.707e-05 legacy_value_usd=9.561836060409338e-07
+  [INPUT balance] BBH liquid=1.63 legacy_value_usd=0.00031795763975813824
+  [INPUT balance] PEPE liquid=50.0005326 legacy_value_usd=2.9018235405641665e-06
+  [INPUT balance] ALIVE liquid=0.0071 legacy_value_usd=3.6415801148621953e-06
+  [INPUT balance] GROWTH liquid=2.794e-05 legacy_value_usd=None
+  [INPUT balance] STR liquid=0.1 legacy_value_usd=None
+  [INPUT balance] HOP liquid=1.00001 legacy_value_usd=None
+  [INPUT balance] WRD liquid=1.00001 legacy_value_usd=None
+  [INPUT balance] IDD liquid=1.000015 legacy_value_usd=None
+  [INPUT balance] BBHO liquid=0.0890279 legacy_value_usd=None
+  [INPUT balance] BEE liquid=0.00204372 legacy_value_usd=5.642086219390672e-05
+  [INPUT balance] HEARTBEAT liquid=2.20815292 legacy_value_usd=0.0001531986685614178
+  [INPUT balance] THREE liquid=3473.26977848 legacy_value_usd=4.333396383573606e-09
+  [INPUT balance] POKEMON liquid=8.92e-06 legacy_value_usd=None
+  [INPUT balance] PIMP liquid=0.00012448 legacy_value_usd=3.8550440291523865e-08
+  [INPUT balance] WAIV liquid=2.5e-07 legacy_value_usd=2.5438359079637617e-09
+  [INPUT balance] LIMITLESS liquid=2.74e-06 legacy_value_usd=6.944550522880993e-11
+  [INPUT balance] TOOFUCKEH liquid=2.735e-05 legacy_value_usd=1.6502251063416826e-08
+  [INPUT balance] HASHSCORE liquid=1.6e-05 legacy_value_usd=2.336919433493538e-09
+  [INPUT balance] LOLZ liquid=2.06e-06 legacy_value_usd=7.106977659474914e-10
+  [INPUT balance] SWAP.PEPE liquid=5.7e-06 legacy_value_usd=None
+  [INPUT balance] SWAP.PEPET liquid=3.828e-05 legacy_value_usd=None
+  [GATE] ALIVE:SWAP.HIVE: entry skipped: already held
+  [GATE] ALIVE:HEARTBEAT: entry skipped: already held
+  [GATE] HSBIDAO:PIXYDUST: entry skipped: already held
+  [ENTRY INPUT] TOOFUCKEH:SWAP.HIVE: base_value=1.6502251063416826e-08 quote_value=8.72268790075735e-06 legacy_direct_gate=False
+  [GATE] TOOFUCKEH:SWAP.HIVE: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] SWAP.HIVE:TRIBE: base_value=8.72268790075735e-06 quote_value=0 legacy_direct_gate=False
+  [GATE] SWAP.HIVE:TRIBE: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] DVS:DHEDGE: base_value=0 quote_value=0 legacy_direct_gate=False
+  [GATE] DVS:DHEDGE: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] ATX:SWAP.HIVE: base_value=0 quote_value=8.72268790075735e-06 legacy_direct_gate=False
+  [GATE] ATX:SWAP.HIVE: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] CENT:TRIBE: base_value=0.0007855454030172824 quote_value=0 legacy_direct_gate=False
+  [GATE] CENT:TRIBE: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] SWAP.HIVE:WAIV: base_value=8.72268790075735e-06 quote_value=2.5438359079637617e-09 legacy_direct_gate=False
+  [GATE] SWAP.HIVE:WAIV: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] STARPRO:SWAP.HIVE: base_value=0 quote_value=8.72268790075735e-06 legacy_direct_gate=False
+  [GATE] STARPRO:SWAP.HIVE: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] ZING:SWAP.HIVE: base_value=0 quote_value=8.72268790075735e-06 legacy_direct_gate=False
+  [GATE] ZING:SWAP.HIVE: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] SWAP.HIVE:LASSECASH: base_value=8.72268790075735e-06 quote_value=0 legacy_direct_gate=False
+  [GATE] SWAP.HIVE:LASSECASH: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] SWAP.HIVE:CENT: base_value=8.72268790075735e-06 quote_value=0.0007855454030172824 legacy_direct_gate=False
+  [GATE] SWAP.HIVE:CENT: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] CCC:WIT: base_value=0 quote_value=0 legacy_direct_gate=False
+  [GATE] CCC:WIT: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] SWAP.HBD:CENT: base_value=0 quote_value=0.0007855454030172824 legacy_direct_gate=False
+  [GATE] SWAP.HBD:CENT: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] SWAP.HIVE:TRADE: base_value=8.72268790075735e-06 quote_value=0 legacy_direct_gate=False
+  [GATE] SWAP.HIVE:TRADE: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] LIMITLESS:SWAP.HIVE: base_value=6.944550522880993e-11 quote_value=8.72268790075735e-06 legacy_direct_gate=False
+  [GATE] LIMITLESS:SWAP.HIVE: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] PEPENTROPY:SWAP.HIVE: base_value=0 quote_value=8.72268790075735e-06 legacy_direct_gate=False
+  [GATE] PEPENTROPY:SWAP.HIVE: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] LEN:LENM: base_value=0 quote_value=0 legacy_direct_gate=False
+  [GATE] LEN:LENM: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] SWAP.HIVE:SIM: base_value=8.72268790075735e-06 quote_value=0 legacy_direct_gate=False
+  [GATE] SWAP.HIVE:SIM: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] SWAP.HIVE:PLN: base_value=8.72268790075735e-06 quote_value=0 legacy_direct_gate=False
+  [GATE] SWAP.HIVE:PLN: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] AEGIS:SWAP.HIVE: base_value=0 quote_value=8.72268790075735e-06 legacy_direct_gate=False
+  [GATE] AEGIS:SWAP.HIVE: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] CENT:BEE: base_value=0.0007855454030172824 quote_value=5.642086219390672e-05 legacy_direct_gate=False
+  [GATE] CENT:BEE: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] CENT:BEED: base_value=0.0007855454030172824 quote_value=0 legacy_direct_gate=False
+  [GATE] CENT:BEED: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] CENT:TRADE: base_value=0.0007855454030172824 quote_value=0 legacy_direct_gate=False
+  [GATE] CENT:TRADE: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] UNICOIN:SWAP.HIVE: base_value=0.000206451802172882 quote_value=8.72268790075735e-06 legacy_direct_gate=False
+  [GATE] UNICOIN:SWAP.HIVE: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] MEME:PEPE: base_value=0 quote_value=2.9018235405641665e-06 legacy_direct_gate=False
+  [GATE] MEME:PEPE: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] SWAP.HIVE:PIMP: base_value=8.72268790075735e-06 quote_value=3.8550440291523865e-08 legacy_direct_gate=False
+  [GATE] SWAP.HIVE:PIMP: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] SWAP.HIVE:LBI: base_value=8.72268790075735e-06 quote_value=0 legacy_direct_gate=False
+  [GATE] SWAP.HIVE:LBI: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] MEME:LOLZ: base_value=0 quote_value=7.106977659474914e-10 legacy_direct_gate=False
+  [GATE] MEME:LOLZ: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] CCC:PHOTO: base_value=0 quote_value=0.0 legacy_direct_gate=False
+  [GATE] CCC:PHOTO: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] SWAP.HIVE:SHORT: base_value=8.72268790075735e-06 quote_value=0 legacy_direct_gate=False
+  [GATE] SWAP.HIVE:SHORT: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] CENT:SWAP.USDT: base_value=0.0007855454030172824 quote_value=0 legacy_direct_gate=False
+  [GATE] CENT:SWAP.USDT: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] WOO:SWAP.HIVE: base_value=0 quote_value=8.72268790075735e-06 legacy_direct_gate=False
+  [GATE] WOO:SWAP.HIVE: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] SWAP.BTC:LBI: base_value=0 quote_value=0 legacy_direct_gate=False
+  [GATE] SWAP.BTC:LBI: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] HASHSCORE:SWAP.HIVE: base_value=2.336919433493538e-09 quote_value=8.72268790075735e-06 legacy_direct_gate=False
+  [GATE] HASHSCORE:SWAP.HIVE: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] SWAP.HBD:LBI: base_value=0 quote_value=0 legacy_direct_gate=False
+  [GATE] SWAP.HBD:LBI: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] SPORTS:SWAP.HIVE: base_value=0 quote_value=8.72268790075735e-06 legacy_direct_gate=False
+  [GATE] SPORTS:SWAP.HIVE: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] HSBIDAO:LBI: base_value=0.0 quote_value=0 legacy_direct_gate=False
+  [GATE] HSBIDAO:LBI: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] CENT:SHORT: base_value=0.0007855454030172824 quote_value=0 legacy_direct_gate=False
+  [GATE] CENT:SHORT: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] CENT:LBI: base_value=0.0007855454030172824 quote_value=0 legacy_direct_gate=False
+  [GATE] CENT:LBI: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] CCC:MUSIC: base_value=0 quote_value=0 legacy_direct_gate=False
+  [GATE] CCC:MUSIC: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] SWAP.HBD:SHORT: base_value=0 quote_value=0 legacy_direct_gate=False
+  [GATE] SWAP.HBD:SHORT: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] SWAP.HIVE:CENTG: base_value=8.72268790075735e-06 quote_value=0 legacy_direct_gate=False
+  [GATE] SWAP.HIVE:CENTG: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] CENT:CENTG: base_value=0.0007855454030172824 quote_value=0 legacy_direct_gate=False
+  [GATE] CENT:CENTG: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] CENT:POB: base_value=0.0007855454030172824 quote_value=0.00041485355026594427 legacy_direct_gate=False
+  [GATE] CENT:POB: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] CENT:SWAP.BTC: base_value=0.0007855454030172824 quote_value=0 legacy_direct_gate=False
+  [GATE] CENT:SWAP.BTC: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] SPT:SWAP.HIVE: base_value=0 quote_value=8.72268790075735e-06 legacy_direct_gate=False
+  [GATE] SPT:SWAP.HIVE: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] HASHSCORE:LIMITLESS: base_value=2.336919433493538e-09 quote_value=6.944550522880993e-11 legacy_direct_gate=False
+  [GATE] HASHSCORE:LIMITLESS: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] SWAP.BTC:WEED: base_value=0 quote_value=0 legacy_direct_gate=False
+  [GATE] SWAP.BTC:WEED: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] SWAP.HIVE:WEED: base_value=8.72268790075735e-06 quote_value=0 legacy_direct_gate=False
+  [GATE] SWAP.HIVE:WEED: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] PIMP:THGAMING: base_value=3.8550440291523865e-08 quote_value=0 legacy_direct_gate=False
+  [GATE] PIMP:THGAMING: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] SWAP.HIVE:HUESO: base_value=8.72268790075735e-06 quote_value=0 legacy_direct_gate=False
+  [GATE] SWAP.HIVE:HUESO: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] EPAY:SWAP.HBD: base_value=0 quote_value=0 legacy_direct_gate=False
+  [GATE] EPAY:SWAP.HBD: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] ALIVE:LBI: base_value=3.6415801148621953e-06 quote_value=0 legacy_direct_gate=False
+  [GATE] ALIVE:LBI: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] SWAP.HIVE:PAL: base_value=8.72268790075735e-06 quote_value=0 legacy_direct_gate=False
+  [GATE] SWAP.HIVE:PAL: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] CCC:SCHOLAR: base_value=0 quote_value=0 legacy_direct_gate=False
+  [GATE] CCC:SCHOLAR: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] SWAP.HIVE:LIST: base_value=8.72268790075735e-06 quote_value=0 legacy_direct_gate=False
+  [GATE] SWAP.HIVE:LIST: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] CENT:SPS: base_value=0.0007855454030172824 quote_value=0 legacy_direct_gate=False
+  [GATE] CENT:SPS: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] CCD:SWAP.HIVE: base_value=0 quote_value=8.72268790075735e-06 legacy_direct_gate=False
+  [GATE] CCD:SWAP.HIVE: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] SWAP.HIVE:PHOTO: base_value=8.72268790075735e-06 quote_value=0.0 legacy_direct_gate=False
+  [GATE] SWAP.HIVE:PHOTO: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] WINE:WINEX: base_value=0 quote_value=0 legacy_direct_gate=False
+  [GATE] WINE:WINEX: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] CENT:LEO: base_value=0.0007855454030172824 quote_value=0 legacy_direct_gate=False
+  [GATE] CENT:LEO: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] SWAP.HIVE:SCP: base_value=8.72268790075735e-06 quote_value=0 legacy_direct_gate=False
+  [GATE] SWAP.HIVE:SCP: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] ALIVE:ALIVEM: base_value=3.6415801148621953e-06 quote_value=0 legacy_direct_gate=False
+  [GATE] ALIVE:ALIVEM: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] BEE:PAL: base_value=5.642086219390672e-05 quote_value=0 legacy_direct_gate=False
+  [GATE] BEE:PAL: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] CENT:SWAP.ETH: base_value=0.0007855454030172824 quote_value=0 legacy_direct_gate=False
+  [GATE] CENT:SWAP.ETH: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] ARCHON:SWAP.HIVE: base_value=0 quote_value=8.72268790075735e-06 legacy_direct_gate=False
+  [GATE] ARCHON:SWAP.HIVE: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] SWAP.HIVE:VOTE: base_value=8.72268790075735e-06 quote_value=0 legacy_direct_gate=False
+  [GATE] SWAP.HIVE:VOTE: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] PHOTO:MEME: base_value=0.0 quote_value=0 legacy_direct_gate=False
+  [GATE] PHOTO:MEME: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] VOTE:PAY: base_value=0 quote_value=0 legacy_direct_gate=False
+  [GATE] VOTE:PAY: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] WOO:PIZZA: base_value=0 quote_value=0.0 legacy_direct_gate=False
+  [GATE] WOO:PIZZA: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] WOO:DEC: base_value=0 quote_value=0 legacy_direct_gate=False
+  [GATE] WOO:DEC: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] WOO:SPS: base_value=0 quote_value=0 legacy_direct_gate=False
+  [GATE] WOO:SPS: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] SWAP.HIVE:MEME: base_value=8.72268790075735e-06 quote_value=0 legacy_direct_gate=False
+  [GATE] SWAP.HIVE:MEME: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  [ENTRY INPUT] DENAR:SWAP.HIVE: base_value=0 quote_value=8.72268790075735e-06 legacy_direct_gate=False
+  [GATE] DENAR:SWAP.HIVE: entry rejected: legacy direct/swap USD gates not met; no executable quote assessed
+  Planned actions: 0
+  [DRY-RUN] Skipping execution - remove dry-run guard to enable
+RESULT: []
+Read-only diagnostic complete. No transactions submitted.

@@ -1,0 +1,106 @@
+test_complete_synthetic_positive_evidence_can_select (test_candidate_evidence_boundary.EvidenceBoundaryTests.test_complete_synthetic_positive_evidence_can_select) ... ok
+test_mechanics_pass_is_not_economic_evidence (test_candidate_evidence_boundary.EvidenceBoundaryTests.test_mechanics_pass_is_not_economic_evidence) ... ok
+test_main_never_initializes_executor_or_tracker (test_cron_dry_run.CronTests.test_main_never_initializes_executor_or_tracker) ... ok
+test_existing_position_topup_evidence_handoff (test_existing_position_planner.ExistingPositionPlannerTest.test_existing_position_topup_evidence_handoff) ... ok
+test_horizons_must_match (test_lp_decisions.DecisionsTests.test_horizons_must_match) ... ok
+test_joint_beats_greedy_and_reserves_once (test_lp_decisions.DecisionsTests.test_joint_beats_greedy_and_reserves_once) ... ok
+test_missing_fees_not_zero (test_lp_decisions.DecisionsTests.test_missing_fees_not_zero) ... ok
+test_net_cost_and_hold (test_lp_decisions.DecisionsTests.test_net_cost_and_hold) ... ok
+test_no_dollar_minimum (test_lp_decisions.DecisionsTests.test_no_dollar_minimum) ... ok
+test_shared_pool_conflicts (test_lp_decisions.DecisionsTests.test_shared_pool_conflicts) ... ok
+test_unknown_blocks (test_lp_decisions.DecisionsTests.test_unknown_blocks) ... ok
+test_add_and_weighted_age (test_lp_mechanics.MechanicsTests.test_add_and_weighted_age) ... ok
+test_add_funding_guard (test_lp_mechanics.MechanicsTests.test_add_funding_guard) ... ok
+test_add_price_impact_guard (test_lp_mechanics.MechanicsTests.test_add_price_impact_guard) ... ok
+test_fee_and_direction (test_lp_mechanics.MechanicsTests.test_fee_and_direction) ... ok
+test_fee_required (test_lp_mechanics.MechanicsTests.test_fee_required) ... ok
+test_invalid_symbol_and_overprecision (test_lp_mechanics.MechanicsTests.test_invalid_symbol_and_overprecision) ... ok
+test_precision_zero_output_rejected (test_lp_mechanics.MechanicsTests.test_precision_zero_output_rejected) ... ok
+test_remove_percentage_not_shares (test_lp_mechanics.MechanicsTests.test_remove_percentage_not_shares) ... ok
+test_remove_rounded_zero_fails (test_lp_mechanics.MechanicsTests.test_remove_rounded_zero_fails) ... ok
+test_route_two_hops_and_no_mutation (test_lp_mechanics.MechanicsTests.test_route_two_hops_and_no_mutation) ... ok
+test_unknown_route (test_lp_mechanics.MechanicsTests.test_unknown_route) ... ok
+test_excluded_position_rewards_zero_both_branches (test_lp_position_scenario.PositionScenarioTest.test_excluded_position_rewards_zero_both_branches) ... ok
+test_hand_calculated_age_and_both_rewards (test_lp_position_scenario.PositionScenarioTest.test_hand_calculated_age_and_both_rewards) ... ok
+test_invalid_participants_fail_closed (test_lp_position_scenario.PositionScenarioTest.test_invalid_participants_fail_closed) ... ok
+test_multiple_batches_independent_budgets (test_lp_position_scenario.PositionScenarioTest.test_multiple_batches_independent_budgets) ... ok
+test_multitick_budget_reserves_rounded_all_participant_payouts (test_lp_position_scenario.PositionScenarioTest.test_multitick_budget_reserves_rounded_all_participant_payouts) ... ok
+test_no_rewards_has_no_invented_advantage (test_lp_position_scenario.PositionScenarioTest.test_no_rewards_has_no_invented_advantage) ... ok
+test_third_token_blocks_comparison (test_lp_position_scenario.PositionScenarioTest.test_third_token_blocks_comparison) ... ok
+test_bad_budget (test_lp_reward_math.RewardTests.test_bad_budget) ... ok
+test_bonus_denominator_all_eligible (test_lp_reward_math.RewardTests.test_bonus_denominator_all_eligible) ... ok
+test_duplicate_and_mixed_rows_unknown (test_lp_reward_math.RewardTests.test_duplicate_and_mixed_rows_unknown) ... ok
+test_exact_one_tick_raw_no_bonus (test_lp_reward_math.RewardTests.test_exact_one_tick_raw_no_bonus) ... ok
+test_exclusion_changes_denominator (test_lp_reward_math.RewardTests.test_exclusion_changes_denominator) ... ok
+test_fractional_time_factor (test_lp_reward_math.RewardTests.test_fractional_time_factor) ... ok
+test_half_budget (test_lp_reward_math.RewardTests.test_half_budget) ... ok
+test_immature_no_payout (test_lp_reward_math.RewardTests.test_immature_no_payout) ... ok
+test_inactive_exhausted_and_mining (test_lp_reward_math.RewardTests.test_inactive_exhausted_and_mining) ... ok
+test_input_immutable_json_output (test_lp_reward_math.RewardTests.test_input_immutable_json_output) ... ok
+test_integer_periods_do_not_enable_bonus_upstream (test_lp_reward_math.RewardTests.test_integer_periods_do_not_enable_bonus_upstream) ... ok
+test_last_tick (test_lp_reward_math.RewardTests.test_last_tick) ... ok
+test_missing_exclusions (test_lp_reward_math.RewardTests.test_missing_exclusions) ... ok
+test_missing_precision (test_lp_reward_math.RewardTests.test_missing_precision) ... ok
+test_single_gets_budget (test_lp_reward_math.RewardTests.test_single_gets_budget) ... ok
+test_tiny_rounded_zero (test_lp_reward_math.RewardTests.test_tiny_rounded_zero) ... ok
+test_unknown_not_partial_denominator (test_lp_reward_math.RewardTests.test_unknown_not_partial_denominator) ... ok
+test_zero_precision (test_lp_reward_math.RewardTests.test_zero_precision) ... ok
+test_refuses_existing_position (test_lp_scenario.ScenarioTest.test_refuses_existing_position) ... ok
+test_refuses_incomplete_snapshot (test_lp_scenario.ScenarioTest.test_refuses_incomplete_snapshot) ... ok
+test_refuses_invalid_horizon (test_lp_scenario.ScenarioTest.test_refuses_invalid_horizon) ... ok
+test_scenario_mechanics (test_lp_scenario.ScenarioTest.test_scenario_mechanics) ... ok
+test_above_one_dollar_exit_included (test_planner_legacy_gates.LegacyGateTests.test_above_one_dollar_exit_included) ... ok
+test_diagnostics_do_not_change_decisions (test_planner_legacy_gates.LegacyGateTests.test_diagnostics_do_not_change_decisions) ... ok
+test_entry_at_one_dollar_included (test_planner_legacy_gates.LegacyGateTests.test_entry_at_one_dollar_included) ... ok
+test_exact_one_dollar_exit_excluded (test_planner_legacy_gates.LegacyGateTests.test_exact_one_dollar_exit_excluded) ... ok
+test_small_position_and_entry_rejected (test_planner_legacy_gates.LegacyGateTests.test_small_position_and_entry_rejected) ... ok
+test_all_pools_and_no_wallet_mutation (test_pool_assessment.AssessmentTests.test_all_pools_and_no_wallet_mutation) ... ok
+test_pepe_metadata_never_moves_without_evidence (test_pool_assessment.AssessmentTests.test_pepe_metadata_never_moves_without_evidence) ... ok
+test_stake_never_spent (test_pool_assessment.AssessmentTests.test_stake_never_spent) ... ok
+test_tiny_pair_considered_without_price (test_pool_assessment.AssessmentTests.test_tiny_pair_considered_without_price) ... ok
+test_dust_is_not_filtered_from_idle (test_position_valuation.ValuationTests.test_dust_is_not_filtered_from_idle) ... ok
+test_invalid_prices_unknown (test_position_valuation.ValuationTests.test_invalid_prices_unknown) ... ok
+test_liquid_excludes_stake (test_position_valuation.ValuationTests.test_liquid_excludes_stake) ... ok
+test_missing_price_is_unknown (test_position_valuation.ValuationTests.test_missing_price_is_unknown) ... ok
+test_reload_removes_stale_positions (test_position_valuation.ValuationTests.test_reload_removes_stale_positions) ... ok
+test_unknown_total_is_not_complete_value (test_position_valuation.ValuationTests.test_unknown_total_is_not_complete_value) ... ok
+test_use_usd_prices_not_exchange_ratios (test_position_valuation.ValuationTests.test_use_usd_prices_not_exchange_ratios) ... ok
+test_floor_never_overspends (test_price_inputs.PriceTests.test_floor_never_overspends) ... ok
+test_missing_market_does_not_invent_hive_price (test_price_inputs.PriceTests.test_missing_market_does_not_invent_hive_price) ... ok
+test_no_historical_external_anchor (test_price_inputs.PriceTests.test_no_historical_external_anchor) ... ok
+test_order_independent_deeper_known_side (test_price_inputs.PriceTests.test_order_independent_deeper_known_side) ... ok
+test_unknown_fee_has_explicit_status (test_price_inputs.PriceTests.test_unknown_fee_has_explicit_status) ... ok
+test_unknown_precision_not_invented (test_price_inputs.PriceTests.test_unknown_precision_not_invented) ... ok
+test_batches_not_merged_or_bonus_inflated (test_reward_discovery.DiscoveryTests.test_batches_not_merged_or_bonus_inflated) ... ok
+test_rpc_failure_not_empty_landscape (test_reward_discovery.DiscoveryTests.test_rpc_failure_not_empty_landscape) ... ok
+
+----------------------------------------------------------------------
+Ran 75 tests in 0.071s
+
+OK
+=== HERMES LP AGENT CRON RUN ===
+Started: 2026-09-17T08:26:04.160672
+  PriceEngine: 1 pools, 2 indicative marks; SWAP.HBD numeraire
+Portfolio valuation: {"basis": "indicative reserve-ratio marks; not executable sale quotes", "liquid_known_mark": 0.004, "lp_known_mark": 0.004, "staked_known_mark": 200.0, "unpriced_liquid": [], "unpriced_staked": [], "unpriced_positions": []}
+Positions: 1
+
+=== REWARD DISCOVERY ===
+  Discovery: 0 active-flag batches, 0 funded reward pools
+  Discovered 0 active reward distributions
+  [DRY-RUN] Funded-test tracking skipped: no verified deployment receipt
+
+=== POSITION MANAGEMENT ===
+  Joint selector: {"selected": [], "net_advantage_lower": "0", "reserved": {}, "assessments": [{"id": "A:SWAP.HBD", "decision": "observe", "net_advantage_lower": null, "reason": "mechanics not verified"}], "scope": "best subset of supplied independent verified scenarios; not all possible allocations"}
+  Assessed 1 pools; 1 have nonzero paired liquid amounts
+  Planned actions: 0 — net advantage and execution quotes not yet verified
+  [DRY-RUN] No transactions submitted
+
+Completed: 2026-09-17T08:26:04.161140
+  PriceEngine: 0 pools, 1 indicative marks; SWAP.HBD numeraire
+  PriceEngine: 0 pools, 1 indicative marks; SWAP.HBD numeraire
+  PriceEngine: 2 pools, 3 indicative marks; SWAP.HBD numeraire
+  PriceEngine: 4 pools, 4 indicative marks; SWAP.HBD numeraire
+  PriceEngine: 4 pools, 4 indicative marks; SWAP.HBD numeraire
+  PriceEngine: 1 pools, 2 indicative marks; SWAP.HBD numeraire
+  PriceEngine: 0 pools, 1 indicative marks; SWAP.HBD numeraire
+  Discovery: 2 active-flag batches, 1 funded reward pools

@@ -1,0 +1,376 @@
+{
+  "pool": "CENT:POB",
+  "horizon_start_ms": 1789666091837,
+  "horizon_end_ms": 1790270891837,
+  "deposit": {
+    "pool": "CENT:POB",
+    "amounts": {
+      "CENT": "7.88107587",
+      "POB": "1.96463403"
+    },
+    "shares_added": "3.41975432563212342302",
+    "timeFactor": 1789666091837,
+    "pool_after": {
+      "_id": 38,
+      "tokenPair": "CENT:POB",
+      "baseQuantity": "1151229.89494086",
+      "baseVolume": "48601113.10080815",
+      "basePrice": "0.249285",
+      "quoteQuantity": "286984.34882209",
+      "quoteVolume": "14972884.15098130",
+      "quotePrice": "4.01147274",
+      "totalShares": "499541.36693535231581136275",
+      "precision": 8,
+      "creator": "anadolu"
+    }
+  },
+  "withdrawal": {
+    "pool": "CENT:POB",
+    "sharesOut": "100",
+    "shares_removed": "3.41975432563212342302",
+    "amounts": {
+      "CENT": "7.88107587",
+      "POB": "1.96463402"
+    },
+    "pool_after": {
+      "_id": 38,
+      "tokenPair": "CENT:POB",
+      "baseQuantity": "1151222.01386499",
+      "baseVolume": "48601113.10080815",
+      "basePrice": "0.249285",
+      "quoteQuantity": "286982.38418807",
+      "quoteVolume": "14972884.15098130",
+      "quotePrice": "4.01147274",
+      "totalShares": "499537.94718102668368793973",
+      "precision": 8,
+      "creator": "anadolu"
+    }
+  },
+  "ticks": [
+    {
+      "batch_id": 307,
+      "at_ms": 1789740618000,
+      "our_result": {
+        "status": "ok",
+        "batch_id": 307,
+        "account": "hermes-sandbox",
+        "eligible": false,
+        "entitlements": [
+          {
+            "symbol": "POB",
+            "payout_share": "0",
+            "unfloored_estimate": "0",
+            "rounded_zero": false,
+            "share_total": "499537.94718102668368793973",
+            "tick_budget": "421.59754764698198198198"
+          }
+        ],
+        "reason": "excluded, immature, absent, or no eligible shares",
+        "source": {
+          "file": "contracts/distribution.js",
+          "url": "https://raw.githubusercontent.com/hive-engine/hivesmartcontracts/master/contracts/distribution.js",
+          "limitation": "Public upstream source, not verified deployed parity; complete participant snapshot required"
+        },
+        "basis": "conditional single-tick estimate, not observed earnings",
+        "effective_shares": "0",
+        "share_total": "499537.94718102668368793973",
+        "bonus_multiplier": null,
+        "ticks_remaining": 222,
+        "tick_interval_ms": "86400000"
+      },
+      "reserved": {
+        "POB": "421.59754704"
+      }
+    },
+    {
+      "batch_id": 307,
+      "at_ms": 1789827018000,
+      "our_result": {
+        "status": "ok",
+        "batch_id": 307,
+        "account": "hermes-sandbox",
+        "eligible": true,
+        "entitlements": [
+          {
+            "symbol": "POB",
+            "payout_share": "0.00288616",
+            "unfloored_estimate": "0.00288616745815495054",
+            "rounded_zero": false,
+            "share_total": "499541.36693535231581136275",
+            "tick_budget": "421.59754764972850678733"
+          }
+        ],
+        "reason": "eligible",
+        "source": {
+          "file": "contracts/distribution.js",
+          "url": "https://raw.githubusercontent.com/hive-engine/hivesmartcontracts/master/contracts/distribution.js",
+          "limitation": "Public upstream source, not verified deployed parity; complete participant snapshot required"
+        },
+        "basis": "conditional single-tick estimate, not observed earnings",
+        "effective_shares": "3.41975432563212342302",
+        "share_total": "499541.36693535231581136275",
+        "bonus_multiplier": "1",
+        "ticks_remaining": 221,
+        "tick_interval_ms": "86400000"
+      },
+      "reserved": {
+        "POB": "421.59754709"
+      }
+    },
+    {
+      "batch_id": 307,
+      "at_ms": 1789913418000,
+      "our_result": {
+        "status": "ok",
+        "batch_id": 307,
+        "account": "hermes-sandbox",
+        "eligible": true,
+        "entitlements": [
+          {
+            "symbol": "POB",
+            "payout_share": "0.00288616",
+            "unfloored_estimate": "0.00288616745817236774",
+            "rounded_zero": false,
+            "share_total": "499541.36693535231581136275",
+            "tick_budget": "421.59754765227272727273"
+          }
+        ],
+        "reason": "eligible",
+        "source": {
+          "file": "contracts/distribution.js",
+          "url": "https://raw.githubusercontent.com/hive-engine/hivesmartcontracts/master/contracts/distribution.js",
+          "limitation": "Public upstream source, not verified deployed parity; complete participant snapshot required"
+        },
+        "basis": "conditional single-tick estimate, not observed earnings",
+        "effective_shares": "3.41975432563212342302",
+        "share_total": "499541.36693535231581136275",
+        "bonus_multiplier": "1",
+        "ticks_remaining": 220,
+        "tick_interval_ms": "86400000"
+      },
+      "reserved": {
+        "POB": "421.59754709"
+      }
+    },
+    {
+      "batch_id": 307,
+      "at_ms": 1789999818000,
+      "our_result": {
+        "status": "ok",
+        "batch_id": 307,
+        "account": "hermes-sandbox",
+        "eligible": true,
+        "entitlements": [
+          {
+            "symbol": "POB",
+            "payout_share": "0.00288616",
+            "unfloored_estimate": "0.00288616745818994399",
+            "rounded_zero": false,
+            "share_total": "499541.36693535231581136275",
+            "tick_budget": "421.5975476548401826484"
+          }
+        ],
+        "reason": "eligible",
+        "source": {
+          "file": "contracts/distribution.js",
+          "url": "https://raw.githubusercontent.com/hive-engine/hivesmartcontracts/master/contracts/distribution.js",
+          "limitation": "Public upstream source, not verified deployed parity; complete participant snapshot required"
+        },
+        "basis": "conditional single-tick estimate, not observed earnings",
+        "effective_shares": "3.41975432563212342302",
+        "share_total": "499541.36693535231581136275",
+        "bonus_multiplier": "1",
+        "ticks_remaining": 219,
+        "tick_interval_ms": "86400000"
+      },
+      "reserved": {
+        "POB": "421.59754711"
+      }
+    },
+    {
+      "batch_id": 307,
+      "at_ms": 1790086218000,
+      "our_result": {
+        "status": "ok",
+        "batch_id": 307,
+        "account": "hermes-sandbox",
+        "eligible": true,
+        "entitlements": [
+          {
+            "symbol": "POB",
+            "payout_share": "0.00288616",
+            "unfloored_estimate": "0.00288616745820705344",
+            "rounded_zero": false,
+            "share_total": "499541.36693535231581136275",
+            "tick_budget": "421.59754765733944954128"
+          }
+        ],
+        "reason": "eligible",
+        "source": {
+          "file": "contracts/distribution.js",
+          "url": "https://raw.githubusercontent.com/hive-engine/hivesmartcontracts/master/contracts/distribution.js",
+          "limitation": "Public upstream source, not verified deployed parity; complete participant snapshot required"
+        },
+        "basis": "conditional single-tick estimate, not observed earnings",
+        "effective_shares": "3.41975432563212342302",
+        "share_total": "499541.36693535231581136275",
+        "bonus_multiplier": "1",
+        "ticks_remaining": 218,
+        "tick_interval_ms": "86400000"
+      },
+      "reserved": {
+        "POB": "421.59754711"
+      }
+    },
+    {
+      "batch_id": 307,
+      "at_ms": 1790172618000,
+      "our_result": {
+        "status": "ok",
+        "batch_id": 307,
+        "account": "hermes-sandbox",
+        "eligible": true,
+        "entitlements": [
+          {
+            "symbol": "POB",
+            "payout_share": "0.00288616",
+            "unfloored_estimate": "0.00288616745822432059",
+            "rounded_zero": false,
+            "share_total": "499541.36693535231581136275",
+            "tick_budget": "421.59754765986175115207"
+          }
+        ],
+        "reason": "eligible",
+        "source": {
+          "file": "contracts/distribution.js",
+          "url": "https://raw.githubusercontent.com/hive-engine/hivesmartcontracts/master/contracts/distribution.js",
+          "limitation": "Public upstream source, not verified deployed parity; complete participant snapshot required"
+        },
+        "basis": "conditional single-tick estimate, not observed earnings",
+        "effective_shares": "3.41975432563212342302",
+        "share_total": "499541.36693535231581136275",
+        "bonus_multiplier": "1",
+        "ticks_remaining": 217,
+        "tick_interval_ms": "86400000"
+      },
+      "reserved": {
+        "POB": "421.59754711"
+      }
+    },
+    {
+      "batch_id": 307,
+      "at_ms": 1790259018000,
+      "our_result": {
+        "status": "ok",
+        "batch_id": 307,
+        "account": "hermes-sandbox",
+        "eligible": true,
+        "entitlements": [
+          {
+            "symbol": "POB",
+            "payout_share": "0.00288616",
+            "unfloored_estimate": "0.00288616745824174761",
+            "rounded_zero": false,
+            "share_total": "499541.36693535231581136275",
+            "tick_budget": "421.59754766240740740741"
+          }
+        ],
+        "reason": "eligible",
+        "source": {
+          "file": "contracts/distribution.js",
+          "url": "https://raw.githubusercontent.com/hive-engine/hivesmartcontracts/master/contracts/distribution.js",
+          "limitation": "Public upstream source, not verified deployed parity; complete participant snapshot required"
+        },
+        "basis": "conditional single-tick estimate, not observed earnings",
+        "effective_shares": "3.41975432563212342302",
+        "share_total": "499541.36693535231581136275",
+        "bonus_multiplier": "1",
+        "ticks_remaining": 216,
+        "tick_interval_ms": "86400000"
+      },
+      "reserved": {
+        "POB": "421.59754711"
+      }
+    }
+  ],
+  "our_rewards": {
+    "POB": "0.01731696"
+  },
+  "stay_terminal_quote": {
+    "pool": "CENT:POB",
+    "symbol_in": "CENT",
+    "symbol_out": "POB",
+    "amount_in": "15.01273482",
+    "amount_out": "3.73304497",
+    "pool_after": {
+      "_id": 38,
+      "tokenPair": "CENT:POB",
+      "baseQuantity": "1151237.02659981",
+      "baseVolume": "48601113.10080815",
+      "basePrice": "0.24927851",
+      "quoteQuantity": "286978.65114309",
+      "quoteVolume": "14972884.15098130",
+      "quotePrice": "4.01157724",
+      "totalShares": "499537.94718102668368793973",
+      "precision": 8,
+      "creator": "anadolu"
+    },
+    "fee_output_stat": "0.009356",
+    "output_shortfall_vs_spot": "0.00940468778770620221",
+    "price_impact_fraction": "0.00251297643193032138",
+    "basis": "conditional exact-input simulation; not signed or guaranteed"
+  },
+  "move_terminal_quote": {
+    "pool": "CENT:POB",
+    "symbol_in": "CENT",
+    "symbol_out": "POB",
+    "amount_in": "15.01273482",
+    "amount_out": "3.73304497",
+    "pool_after": {
+      "_id": 38,
+      "tokenPair": "CENT:POB",
+      "baseQuantity": "1151237.02659981",
+      "baseVolume": "48601113.10080815",
+      "basePrice": "0.24927851",
+      "quoteQuantity": "286978.6511431",
+      "quoteVolume": "14972884.15098130",
+      "quotePrice": "4.01157724",
+      "totalShares": "499537.94718102668368793973",
+      "precision": 8,
+      "creator": "anadolu"
+    },
+    "fee_output_stat": "0.009356",
+    "output_shortfall_vs_spot": "0.00940468778783660916",
+    "price_impact_fraction": "0.00251297643196507916",
+    "basis": "conditional exact-input simulation; not signed or guaranteed"
+  },
+  "terminal_unit": "POB",
+  "stay_terminal": "5.69767901",
+  "move_terminal": "5.71499596",
+  "unliquidated_rewards": {},
+  "conditional_advantage": "0.01731695",
+  "coverage_complete": false,
+  "decision": "observe; conditional scenario only",
+  "assumptions": [
+    "no external trades or reserve-price changes; no future fees",
+    "no participant changes, new funding or batch edits",
+    "nominal ticks; successful eventual settlement including pending payments",
+    "constant contract parameters; no execution latency or failures",
+    "same terminal liquidation of both branches; no token-charge modeled for add/remove",
+    "RC capacity, future price risk and snapshot atomicity not verified"
+  ],
+  "scope": "direct idle-balance deposit into a new position; no opportunity-cost comparison to other pools",
+  "provenance": {
+    "input_path": "/mnt/Arch-Linux-Share/AgentOS/repos/hive-agent-test/reports/cent-pob-comparison-inputs.json",
+    "input_sha256": "9a0e0eb8c37fe921173fdd8e2786ef6e13a14e418b0f589cbdc7fdb572100475",
+    "reference_hashes": {
+      "marketpools": "fd6d750418df6b23de96fa0ba8cb006828dcbc272d566c6847204b552a41004c",
+      "distribution": "6bd095db17d7c2b76ce534b8235b9fcf05c4f9c033bc2d1d87ede518c5dd4178"
+    },
+    "reference_status": "snapshot-provided reference hashes; not a fresh on-chain verification",
+    "days": 7,
+    "account": "hermes-sandbox",
+    "network_requests": 0,
+    "transactions_submitted": 0
+  }
+}

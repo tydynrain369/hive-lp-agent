@@ -1,0 +1,75 @@
+{
+  "generated_at": "2026-09-21T04:18:48.220972",
+  "policy": {
+    "min_fee_apr_for_productive": 0.5,
+    "min_notable_daily_reward": 0.5,
+    "exit_requires_both_zero": true,
+    "never_auto_execute": true
+  },
+  "verdicts": {
+    "ALIVE:HEARTBEAT": {
+      "pool": "ALIVE:HEARTBEAT",
+      "fee_apr_pct": 0.487,
+      "window_h": 77.29,
+      "reward_token_count": 11,
+      "notable_rewards_per_day": {
+        "ALIVE": 2.5445,
+        "HEARTBEAT": 2.544,
+        "HASHSCORE": 1.272,
+        "TOOFUCKEH": 0.636,
+        "PEPENTROPY": 14.12
+      },
+      "classification": "reward-productive"
+    },
+    "ALIVE:SWAP.HIVE": {
+      "pool": "ALIVE:SWAP.HIVE",
+      "fee_apr_pct": 2.178,
+      "window_h": 77.29,
+      "reward_token_count": 20,
+      "notable_rewards_per_day": {
+        "ALIVE": 1.4672,
+        "BBH": 1.0201,
+        "IDD": 4.2232,
+        "HOP": 3.2276,
+        "WRD": 3.2276,
+        "GAMER": 66.6046,
+        "MEME": 7.0068,
+        "PEPE": 48.7174,
+        "PEPECASH": 3.0953,
+        "SWAP.PEPET": 9.0338,
+        "SWAP.PEPE": 1.3516,
+        "HUESO": 5.2876,
+        "TOOFUCKEH": 4.3335,
+        "PEPENTROPY": 5.8351
+      },
+      "classification": "productive"
+    },
+    "CENT:POB": {
+      "pool": "CENT:POB",
+      "fee_apr_pct": 9.643,
+      "window_h": 15.26,
+      "reward_token_count": 1,
+      "notable_rewards_per_day": {
+        "POB": 251.8035
+      },
+      "classification": "productive"
+    },
+    "HSBIDAO:PIXYDUST": {
+      "pool": "HSBIDAO:PIXYDUST",
+      "fee_apr_pct": 0.16,
+      "window_h": 77.29,
+      "reward_token_count": 13,
+      "notable_rewards_per_day": {
+        "GLITTER": 29.7466,
+        "PIMP": 49.4294,
+        "POKEMON": 0.765,
+        "PEPENTROPY": 10.4817,
+        "THREE": 1378927772.7846,
+        "LIMITLESS": 1.1,
+        "PEPE": 129.4625
+      },
+      "classification": "reward-productive"
+    }
+  },
+  "recommendations": []
+}

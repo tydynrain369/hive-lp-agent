@@ -1,0 +1,18 @@
+{
+  "url": "https://api.hive-engine.com/rpc/contracts",
+  "request": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "find",
+    "params": {
+      "contract": "marketpools",
+      "table": "liquidityPositions",
+      "query": {
+        "account": "hermes-sandbox"
+      },
+      "limit": 1000
+    }
+  },
+  "fetched_utc": "2026-09-17T17:27:50.837035+00:00",
+  "http_status": 200
+}

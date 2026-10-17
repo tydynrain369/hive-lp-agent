@@ -1,0 +1,83 @@
+{
+  "source_result": "/home/tydynrain/hive-agent-test/reports/portfolio-rehearsal-20260917T211950Z.json",
+  "branch": "stay",
+  "max_hops": 3,
+  "diagnosis": [
+    {
+      "symbol": "BBHO",
+      "amount": "0.08903011",
+      "structural_paths_within_3_hops": 0,
+      "first_failure_counts": {}
+    },
+    {
+      "symbol": "GLITTER",
+      "amount": "0.00020225",
+      "structural_paths_within_3_hops": 0,
+      "first_failure_counts": {}
+    },
+    {
+      "symbol": "GROWTH",
+      "amount": "0.00002794",
+      "structural_paths_within_3_hops": 0,
+      "first_failure_counts": {}
+    },
+    {
+      "symbol": "HOP",
+      "amount": "1.000034",
+      "structural_paths_within_3_hops": 0,
+      "first_failure_counts": {}
+    },
+    {
+      "symbol": "IDD",
+      "amount": "1.000046",
+      "structural_paths_within_3_hops": 0,
+      "first_failure_counts": {}
+    },
+    {
+      "symbol": "LIMITLESS",
+      "amount": "0.00000742",
+      "structural_paths_within_3_hops": 8,
+      "first_failure_counts": {
+        "zero output or insufficient liquidity": 8
+      }
+    },
+    {
+      "symbol": "POKEMON",
+      "amount": "0.00002637",
+      "structural_paths_within_3_hops": 0,
+      "first_failure_counts": {}
+    },
+    {
+      "symbol": "STR",
+      "amount": "0.1",
+      "structural_paths_within_3_hops": 0,
+      "first_failure_counts": {}
+    },
+    {
+      "symbol": "SWAP.PEPE",
+      "amount": "0.0000169",
+      "structural_paths_within_3_hops": 0,
+      "first_failure_counts": {}
+    },
+    {
+      "symbol": "SWAP.PEPET",
+      "amount": "0.00011345",
+      "structural_paths_within_3_hops": 0,
+      "first_failure_counts": {}
+    },
+    {
+      "symbol": "THREE",
+      "amount": "9378.86963049",
+      "structural_paths_within_3_hops": 1,
+      "first_failure_counts": {
+        "zero output or insufficient liquidity": 1
+      }
+    },
+    {
+      "symbol": "WRD",
+      "amount": "1.000034",
+      "structural_paths_within_3_hops": 0,
+      "first_failure_counts": {}
+    }
+  ]
+}

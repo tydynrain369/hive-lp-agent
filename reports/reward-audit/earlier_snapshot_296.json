@@ -1,0 +1,231 @@
+{
+  "source": "/home/tydynrain/hive-agent-test/reports/planner-snapshot-20260917T104204Z.json",
+  "timestamp_utc": "20260917T104204Z",
+  "positions": [
+    {
+      "_id": 98716,
+      "account": "pixydust",
+      "tokenPair": "HSBIDAO:PIXYDUST",
+      "shares": "248.42304706775533901626",
+      "timeFactor": 1778930748077
+    },
+    {
+      "_id": 98717,
+      "account": "uni-coin",
+      "tokenPair": "HSBIDAO:PIXYDUST",
+      "shares": "438.46520367616528089772",
+      "timeFactor": 1774549847020
+    },
+    {
+      "_id": 98718,
+      "account": "pixybot",
+      "tokenPair": "HSBIDAO:PIXYDUST",
+      "shares": "559.28727802395797491224",
+      "timeFactor": 1775997870558
+    },
+    {
+      "_id": 98719,
+      "account": "glittertoken",
+      "tokenPair": "HSBIDAO:PIXYDUST",
+      "shares": "1099.89678473620835622544",
+      "timeFactor": 1776457495928
+    },
+    {
+      "_id": 98720,
+      "account": "tribefairy",
+      "tokenPair": "HSBIDAO:PIXYDUST",
+      "shares": "103.00457931229839358933",
+      "timeFactor": 1774668661839
+    },
+    {
+      "_id": 98721,
+      "account": "cryptounicorn420",
+      "tokenPair": "HSBIDAO:PIXYDUST",
+      "shares": "1028.89295792157511812219",
+      "timeFactor": 1777898048460
+    },
+    {
+      "_id": 98737,
+      "account": "tydynrain",
+      "tokenPair": "HSBIDAO:PIXYDUST",
+      "shares": "17.51407906576382260263",
+      "timeFactor": 1778149845748
+    },
+    {
+      "_id": 98743,
+      "account": "juanvegetarian",
+      "tokenPair": "HSBIDAO:PIXYDUST",
+      "shares": "15.29674581303923938491",
+      "timeFactor": 1774634083484
+    },
+    {
+      "_id": 99010,
+      "account": "shturm",
+      "tokenPair": "HSBIDAO:PIXYDUST",
+      "shares": "1.68346304611096309634",
+      "timeFactor": 1783944694249
+    },
+    {
+      "_id": 99680,
+      "account": "lbi-three",
+      "tokenPair": "HSBIDAO:PIXYDUST",
+      "shares": "1181.63114650699737450316",
+      "timeFactor": 1779673018674
+    },
+    {
+      "_id": 99810,
+      "account": "nomaddreamer",
+      "tokenPair": "HSBIDAO:PIXYDUST",
+      "shares": "2.82445346593713974083",
+      "timeFactor": 1786021857684
+    },
+    {
+      "_id": 99813,
+      "account": "pepetoken",
+      "tokenPair": "HSBIDAO:PIXYDUST",
+      "shares": "0.15139571825805352767",
+      "timeFactor": 1784671926390
+    },
+    {
+      "_id": 99876,
+      "account": "dewabrata",
+      "tokenPair": "HSBIDAO:PIXYDUST",
+      "shares": "31.59001408980114598802",
+      "timeFactor": 1778919257974
+    },
+    {
+      "_id": 100208,
+      "account": "sbi10",
+      "tokenPair": "HSBIDAO:PIXYDUST",
+      "shares": "528.23806559357472091521",
+      "timeFactor": 1780274090876
+    },
+    {
+      "_id": 100274,
+      "account": "savvyplayer",
+      "tokenPair": "HSBIDAO:PIXYDUST",
+      "shares": "2.73847443518401841493",
+      "timeFactor": 1780373167823
+    },
+    {
+      "_id": 100324,
+      "account": "keithtaylor",
+      "tokenPair": "HSBIDAO:PIXYDUST",
+      "shares": "10.74089836027378348382",
+      "timeFactor": 1785415524571
+    },
+    {
+      "_id": 100881,
+      "account": "aliveandthriving",
+      "tokenPair": "HSBIDAO:PIXYDUST",
+      "shares": "0.34080258422322120961",
+      "timeFactor": 1786546873682
+    },
+    {
+      "_id": 101558,
+      "account": "tippybot",
+      "tokenPair": "HSBIDAO:PIXYDUST",
+      "shares": "2.10863283338179917012",
+      "timeFactor": 1785983147654
+    },
+    {
+      "_id": 101724,
+      "account": "luckyone18",
+      "tokenPair": "HSBIDAO:PIXYDUST",
+      "shares": "2.86290055918686331726",
+      "timeFactor": 1785819124944
+    },
+    {
+      "_id": 102438,
+      "account": "hermes-sandbox",
+      "tokenPair": "HSBIDAO:PIXYDUST",
+      "shares": "0.00393993002633739626",
+      "timeFactor": 1789078197000
+    }
+  ],
+  "batches": [
+    {
+      "_id": 296,
+      "strategy": "pool",
+      "numTicks": "777",
+      "numTicksLeft": 599,
+      "active": true,
+      "creator": "pixydust",
+      "lastTickTime": 1789563909000,
+      "tokenPair": "HSBIDAO:PIXYDUST",
+      "excludeAccount": [],
+      "bonusCurve": {
+        "numPeriods": "100",
+        "periodBonusPct": "1"
+      },
+      "tokenBalances": [
+        {
+          "symbol": "SWAP.HIVE",
+          "quantity": "40.29279187"
+        },
+        {
+          "symbol": "GLITTER",
+          "quantity": "23307.69007106"
+        },
+        {
+          "symbol": "WAIV",
+          "quantity": "89.24985420"
+        },
+        {
+          "symbol": "SLOTHBUZZ",
+          "quantity": "11.21810587"
+        },
+        {
+          "symbol": "PIMP",
+          "quantity": "38729.91603356"
+        },
+        {
+          "symbol": "POKEMON",
+          "quantity": "599.41540731"
+        },
+        {
+          "symbol": "PEPENTROPY",
+          "quantity": "8212.761"
+        },
+        {
+          "symbol": "THREE",
+          "quantity": "1080445624230.20065164"
+        },
+        {
+          "symbol": "PIXYDUST",
+          "quantity": "340.45703962"
+        },
+        {
+          "symbol": "LBI",
+          "quantity": "14.115797"
+        },
+        {
+          "symbol": "BBHO",
+          "quantity": "14.24196782"
+        },
+        {
+          "symbol": "LIMITLESS",
+          "quantity": "861.87051194"
+        },
+        {
+          "symbol": "PEPE",
+          "quantity": "101439.08137462"
+        }
+      ]
+    }
+  ],
+  "params": [
+    [
+      {
+        "_id": 1,
+        "distCreationFee": "100",
+        "distUpdateFee": "100",
+        "distTickHours": "24",
+        "maxDistributionsLimit": 1,
+        "maxTransferLimit": 50,
+        "processQueryLimit": 1000,
+        "updateIndex": 2
+      }
+    ]
+  ]
+}

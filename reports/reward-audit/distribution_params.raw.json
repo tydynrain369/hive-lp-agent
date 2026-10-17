@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","id":4,"result":{"_id":1,"distCreationFee":"100","distUpdateFee":"100","distTickHours":"24","maxDistributionsLimit":1,"maxTransferLimit":50,"processQueryLimit":1000,"updateIndex":2}}
