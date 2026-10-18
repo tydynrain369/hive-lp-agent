@@ -114,12 +114,55 @@ def _f(r, key):
         return None
 
 
-def market_price(symbol: str) -> Optional[dict]:
-    """Executable price plus a liquidity verdict for a symbol.
+# 2026-10-17 UNITS FIX: every HE market figure is SWAP.HIVE-DENOMINATED
+# (all order books quote in SWAP.HIVE), but consumers downstream priced in
+# USD. The result was a silent 1/HIVE-price inflation (~19x at $0.0524):
+# the deploy sizing quoted CENT at "$0.0011" when the executable truth was
+# 0.0011 HIVE = $0.0000577. The book and the pool AGREED all along; the
+# consumer was unit-blind. market_price() now returns USD in "price" and
+# keeps the raw book figure as "price_hive". If the HIVE anchor cannot be
+# fetched, NO USD price is returned (price=None, price_hive set) — never
+# fabricate a USD figure from a HIVE-denominated print.
+_HIVE_ANCHOR_CACHE = {"value": None, "fetched": False}
 
-    Price basis is the HIGHEST BID when one exists, because that is what a sale
-    would realise; lastPrice is the fallback and is flagged as a stale print.
-    The bid/ask spread is returned as a liquidity measure.
+
+def _hive_anchor_usd():
+    """HIVE/USD from the SWAP.HIVE:SWAP.HBD pool (quote/base), cached per
+    process. None on failure — callers must treat that as unknown."""
+    if _HIVE_ANCHOR_CACHE["fetched"]:
+        return _HIVE_ANCHOR_CACHE["value"]
+    _HIVE_ANCHOR_CACHE["fetched"] = True
+    try:
+        import urllib.request
+        body = json.dumps({"jsonrpc": "2.0", "method": "find", "id": 1,
+                           "params": {"contract": "marketpools",
+                                      "table": "pools",
+                                      "query": {"tokenPair": "SWAP.HIVE:SWAP.HBD"},
+                                      "limit": 1}}).encode()
+        req = urllib.request.Request(HE_RPC, data=body,
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            resp = json.loads(r.read())
+        rows = resp.get("result") or []
+        if rows:
+            b = float(rows[0].get("baseQuantity") or 0)
+            q = float(rows[0].get("quoteQuantity") or 0)
+            if b > 0 and q > 0:
+                _HIVE_ANCHOR_CACHE["value"] = q / b
+    except Exception:
+        _HIVE_ANCHOR_CACHE["value"] = None
+    return _HIVE_ANCHOR_CACHE["value"]
+
+
+def market_price(symbol: str) -> Optional[dict]:
+    """Executable USD price plus a liquidity verdict for a symbol.
+
+    Price basis is the HIGHEST BID when one exists, because that is what a
+    sale would realise; lastPrice is the fallback and is flagged as a stale
+    print. ALL book figures are SWAP.HIVE-denominated: "price" is the USD
+    conversion via the live HIVE anchor; "price_hive" is the raw book figure.
+    The bid/ask spread is returned as a liquidity measure (a ratio — units do
+    not affect it).
     """
     if not symbol:
         return None
@@ -163,8 +206,13 @@ def market_price(symbol: str) -> Optional[dict]:
     else:
         liquidity = "illiquid"
 
+    anchor = _hive_anchor_usd()
+    price_usd = round(price * anchor, 12) if (anchor is not None and price) else None
     return {"symbol": symbol,
-            "price": price,
+            "price": price_usd,
+            "price_hive": price,
+            "hive_anchor": anchor,
+            "units": "USD" if price_usd is not None else "HIVE (anchor unavailable)",
             "lastPrice": lp_f,
             "highest_bid": bid,
             "lowest_ask": ask,

@@ -162,6 +162,11 @@ class PoolData:
     total_shares: float = 0.0
     base_quantity: float = 0.0
     quote_quantity: float = 0.0
+    # 2026-10-17: raw 24h volumes in each side's own token units (contract
+    # fields baseVolume/quoteVolume). Kept raw so the USD pass can convert
+    # honestly once prices exist (volume_24h itself is recomputed there).
+    base_volume: float = 0.0
+    quote_volume: float = 0.0
 
 # ─── Price Engine ───────────────────────────────────────────────────
 class PriceEngine:
@@ -285,7 +290,9 @@ class PriceEngine:
                     liquidity_usd=base_reserve * base_price_in_quote + quote_reserve * quote_price_in_base,
                     total_shares=float(p.get("totalShares", 0)),
                     base_quantity=base_reserve,
-                    quote_quantity=quote_reserve
+                    quote_quantity=quote_reserve,
+                    base_volume=float(p.get("baseVolume", 0)),
+                    quote_volume=float(p.get("quoteVolume", 0))
                 )
             except Exception:
                 continue
@@ -448,7 +455,45 @@ class PriceEngine:
             print(f"  PriceEngine: {len(self.pools)} pools, {len(self.token_prices)} tokens priced, {len(unknown)} unknown")
         else:
             print(f"  PriceEngine: {len(self.pools)} pools, {len(self.token_prices)} tokens priced")
-        
+
+        # ===== SECOND PASS (2026-10-17): honest USD liquidity/volume/APR =====
+        # The first pass computed liquidity_usd and volume_24h BEFORE any USD
+        # price existed, as base_reserve * base_price_in_quote + quote_reserve *
+        # quote_price_in_base — a sum of MIXED TOKEN UNITS (CENT-units plus
+        # TRIBE-units), never USD. Downstream consumers read garbage:
+        # CENT:TRIBE carried "$6.4M" against a real ~$746 TVL; the
+        # min-liquidity gate passed $84 pools as $1.4M; the reward-per-HIVE
+        # scoring term (2026-10-10) was INERT because its pool_tvl_map input
+        # was this unit-babble. Recompute everything now that the USD price
+        # map is complete. Convention preserved: volume counts BOTH sides
+        # (each swap adds its size to baseVolume and quoteVolume alike).
+        # A pool with EITHER side unpriced gets TVL 0.0 — UNKNOWN, never a
+        # half-honest sum — matching the standing rule that a missing TVL
+        # is not a small TVL (rph then skips the term, liquidity gates then
+        # exclude the pool: both conservative and honest).
+        _fixed = _unknown_tvl = 0
+        for _pool in self.pools.values():
+            _b_usd = self.token_prices.get(_pool.base) or 0.0
+            _q_usd = self.token_prices.get(_pool.quote) or 0.0
+            if _b_usd > 0 and _q_usd > 0:
+                _pool.liquidity_usd = (_pool.base_reserve * _b_usd
+                                       + _pool.quote_reserve * _q_usd)
+                _pool.volume_24h = (_pool.base_volume * _b_usd
+                                    + _pool.quote_volume * _q_usd)
+                _pool.fees_24h = _pool.volume_24h * 0.003
+                _pool.apr = ((_pool.fees_24h / _pool.liquidity_usd)
+                             * 365 * 100) if _pool.liquidity_usd > 0 else 0.0
+                _fixed += 1
+            else:
+                _pool.liquidity_usd = 0.0
+                _pool.volume_24h = 0.0
+                _pool.fees_24h = 0.0
+                _pool.apr = 0.0
+                _unknown_tvl += 1
+        if _unknown_tvl:
+            print(f"  PriceEngine: USD pass priced {_fixed} pools' TVL; "
+                  f"{_unknown_tvl} left at 0 (a side token unpriced)")
+
         self._loaded = True
 
     def get_pool(self, base: str, quote: str) -> Optional[PoolData]:

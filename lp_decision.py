@@ -689,7 +689,13 @@ def decide(held_pools: list, reward_info: dict, fee_evidence: Optional[dict] = N
                 # would be dead code in the real scenario. Same normalization
                 # as the fee+dividend site; None contributes nothing.
                 if _reward_per_hive is not None and REWARD_PER_HIVE_WEIGHT > 0:
-                    _rph_apr_equiv = (_reward_per_hive / HIVE_USD_ASSUMED) * 100.0
+                    # 2026-10-17 FIX: APR is ANNUAL. rph is USD per DAY per
+                    # HIVE, so the APR-equivalent is rph*365/HIVE_USD*100 —
+                    # the old rph/HIVE_USD*100 (which treated APR as a daily
+                    # rate) understated the term 365x, making the honest TVL
+                    # fix alone look "still fee-dominant" when it was really
+                    # a second unit bug.
+                    _rph_apr_equiv = (_reward_per_hive * 365.0 / HIVE_USD_ASSUMED) * 100.0
                     score += (_rph_apr_equiv * REWARD_PER_HIVE_WEIGHT
                               * FEE_APR_SCORE_WEIGHT)
                 score *= _viability_factor(th)
@@ -717,13 +723,15 @@ def decide(held_pools: list, reward_info: dict, fee_evidence: Optional[dict] = N
             score = (fee_apr * FEE_APR_SCORE_WEIGHT
                      + realisable_usd * DIVIDEND_USD_SCORE_WEIGHT)
             # 2026-10-10: reward-per-HIVE term — normalized to fee-APR
-            # points so it sits beside the fee term in the same units (a
-            # HIVE at X% APR earns X/100*HIVE_USD/day; reward_per_hive is
-            # USD/day/HIVE, so its APR-equivalent is rph/HIVE_USD*100).
+            # points so it sits beside the fee term in the same units. APR is
+            # ANNUAL: a HIVE at X% APR earns X/100*HIVE_USD per YEAR, so with
+            # reward_per_hive in USD/day/HIVE the APR-equivalent is
+            # rph*365/HIVE_USD*100 (2026-10-17 FIX: the missing *365
+            # understated the term 365x).
             # None (no TVL or unpriced rewards) contributes zero — the
             # pre-2026-10-10 score — never a fabricated number.
             if _reward_per_hive is not None and REWARD_PER_HIVE_WEIGHT > 0:
-                _rph_apr_equiv = (_reward_per_hive / HIVE_USD_ASSUMED) * 100.0
+                _rph_apr_equiv = (_reward_per_hive * 365.0 / HIVE_USD_ASSUMED) * 100.0
                 score += (_rph_apr_equiv * REWARD_PER_HIVE_WEIGHT
                           * FEE_APR_SCORE_WEIGHT)
             score *= _viability_factor(th)
