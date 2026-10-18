@@ -608,7 +608,44 @@ def candidate_watchlist(agent, held_pools, reward_pairs, limit=30):
     COULD deploy into: every pool pairing a wallet token, then the richest
     reward-paying pools, capped at a named limit. Snapshots carry
     scope='candidate' so downstream consumers can distinguish them.
+
+    2026-10-17 (lifecycle gate): candidates now pass the PoolLifecycleFilter
+    BEFORE entering the watchlist. "Pools we COULD deploy into" must mean
+    deployable — delisted bridge tokens (SWAP.WAX/SWAP.EOS, avoid-listed),
+    compromised bridged tokens (SWAP.MATIC etc.), self-issued and unlisted
+    tokens were being snapshotted as prospective destinations, burning
+    observation cycles on dead assets and priming a future deploy into a
+    pool with no real exit. A pool is a candidate only when EVERY token of
+    its pair is dividend-eligible. On filter-import failure the cron must
+    not die: print loud and proceed unfiltered (same fallback posture as
+    decide()'s optional lifecycle wiring).
     """
+    # lifecycle gate (2026-10-17)
+    _lf = None
+    try:
+        from lp_lifecycle import PoolLifecycleFilter
+        _lf = PoolLifecycleFilter()
+    except Exception as _e:
+        print(f"  candidate_watchlist: lifecycle filter unavailable "
+              f"({type(_e).__name__}) — CANDIDATES NOT LIFECYCLE-GATED")
+
+    def _deployable(pair):
+        if _lf is None:
+            return True
+        for _tok in (t for t in pair.split(":") if t):
+            ok, _ = _lf.is_dividend_eligible(_tok, pair)
+            if not ok:
+                return False
+        return True
+
+    _dropped = 0
+    def _keep(pair):
+        nonlocal _dropped
+        if _deployable(pair):
+            return True
+        _dropped += 1
+        return False
+
     watch = {}
     held = set(held_pools or [])
     # 1. pools pairing any wallet token (what we can deploy into directly)
@@ -618,7 +655,7 @@ def candidate_watchlist(agent, held_pools, reward_pairs, limit=30):
         if pair in held:
             continue
         b, _, q = pair.partition(":")
-        if b in wallet_syms or q in wallet_syms:
+        if (b in wallet_syms or q in wallet_syms) and _keep(pair):
             watch[pair] = "wallet-token pool"
     # 2. top reward-paying pools not already held or watched
     def reward_value_usd(entries):
@@ -641,7 +678,12 @@ def candidate_watchlist(agent, held_pools, reward_pairs, limit=30):
             break
         if pair in held or pair in watch:
             continue
+        if not _keep(pair):
+            continue
         watch[pair] = f"reward-paying pool (${value:.4f}/tick)"
+    if _dropped:
+        print(f"  candidate_watchlist: lifecycle gate dropped {_dropped} "
+              f"pool(s) (delisted/compromised/self-issued/unlisted token in pair)")
     return dict(list(watch.items())[:limit])
 
 

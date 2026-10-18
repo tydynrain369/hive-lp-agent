@@ -106,6 +106,14 @@ AVOID_TOKENS = {
     "LGN":       "operator avoid — pools to avoid",
     "LSTR":      "operator avoid — pools to avoid",
     "SURGE":     "operator avoid — pools to avoid",
+    # 2026-10-17 (Tydyn): delisted off-chain-linked bridge tokens. SWAP.WAX
+    # and SWAP.EOS were DELISTED a while ago — the bridge listing ended, so
+    # there is no exit back to the native chain even though the HE-side
+    # book/pool/reserve numbers still compute. Distinct from COMPROMISED
+    # (backing drained): delisted means the door home is closed, not that
+    # the vault was emptied. Pools pairing them must never be destinations.
+    "SWAP.WAX":  "delisted off-chain-linked bridge token (no exit to native chain)",
+    "SWAP.EOS":  "delisted off-chain-linked bridge token (no exit to native chain)",
 }
 
 # 2026-10-05: Operator-CONFIRMED-GOOD tokens. Several carry "dead project"
@@ -189,22 +197,31 @@ class PoolLifecycleFilter:
         return True, "eligible"
 
     def filter_expand_candidates(self, candidates):
-        """Filter expand candidates by lifecycle and token provenance."""
+        """Filter expand candidates by lifecycle and token provenance.
+
+        2026-10-17: rewritten to check BOTH tokens of each pair via
+        is_dividend_eligible — the old body read only pool_id.split(":")[0]
+        (the BASE side), so a bad QUOTE side slipped through exactly the way
+        SWAP.HIVE:SWAP.MATIC slipped past the first decision-layer fix
+        (2026-10-05): same bug, different site. It also lacked the AVOID
+        check entirely. A candidate entry may still pin a specific "token"
+        key; when present that token is checked FIRST (an explicit claim
+        about the asset), then the full pair.
+        """
         filtered = []
         for c in candidates:
             pool_id = c.get("pool") or c.get("to_pool")
-            token = c.get("token") or (pool_id.split(":")[0] if pool_id and ":" in pool_id else None)
-
             eligible, reason = True, "eligible"
-            if token and token in self.compromised:
-                eligible, reason = False, f"token {token} COMPROMISED (bridged backing drained)"
-            elif pool_id and self.is_eol(pool_id):
-                eligible, reason = False, f"pool {pool_id} EOL"
-            elif token and self.is_self_issued(token):
-                eligible, reason = False, f"token {token} self-issued"
-            elif token and self.is_unlisted(token):
-                eligible, reason = False, f"token {token} unlisted"
-
+            checks = []
+            explicit = c.get("token")
+            if explicit:
+                checks.append(explicit)
+            if pool_id and ":" in pool_id:
+                checks.extend(t for t in pool_id.split(":") if t and t != explicit)
+            for tok in checks:
+                eligible, reason = self.is_dividend_eligible(tok, pool_id)
+                if not eligible:
+                    break
             c["_lifecycle_eligible"] = eligible
             c["_lifecycle_reason"] = reason
             if eligible:

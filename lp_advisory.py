@@ -155,6 +155,13 @@ def adjudicate(decision: dict, rec_verdicts: dict) -> dict:
             "fee_apr_pct_authoritative": auth,
             "fee_apr_pct_divergent_NOT_FOR_USE": v.get("fee_apr_pct"),
             "reward_token_count": v.get("reward_token_count"),
+            # 2026-10-17: the decision's OWN score is the ranking ground
+            # truth. The advisory previously re-derived an OLD fee-only
+            # formula and then CHALLENGEd the ranking for not matching its
+            # own recomputation (CENT:TRIBE 1.22 "lowest" vs honest 63.3
+            # first) — a challenge on divergent math, not on the artifact.
+            "decision_expand_score": v.get("expand_score"),
+            "dividend_realisable_usd": v.get("dividend_realisable_usd"),
         }
         # ORDER MATTERS (2026-10-02): the viability factor must be computed
         # BEFORE weighted_score. It was previously computed after, so
@@ -178,6 +185,12 @@ def adjudicate(decision: dict, rec_verdicts: dict) -> dict:
                 (v.get("fee_apr_pct") or 0) * _LD3.FEE_APR_SCORE_WEIGHT
                 + (v.get("reward_token_count") or 0) * _LD3.REWARD_TOKEN_SCORE_WEIGHT, 4)
             entry["weighted_score"] = round(entry["raw_score"] * factor, 4)
+            # 2026-10-17: relabel — this is the LEGACY fee-only recompute the
+            # decision layer outgrew (it lacks the dividend-value and
+            # reward-per-HIVE terms). The LLM previously cited it as "the
+            # weighted_score" to challenge the ranking. Keep the number for
+            # continuity but make its status unambiguous.
+            entry["legacy_fee_only_score_NOT_THE_RANKING"] = entry.pop("weighted_score")
         except Exception:
             pass
         pools.append(entry)
@@ -190,11 +203,17 @@ def adjudicate(decision: dict, rec_verdicts: dict) -> dict:
     try:
         import lp_decision as _LD
         basis = {
-            "formula": ("raw = fee_apr_pct * fee_apr_weight "
-                        "+ reward_token_count * reward_token_weight; "
-                        "then weighted by a viability factor derived from "
-                        "multiple_to_1e6_fee_threshold (distance to the point "
-                        "where the position starts earning)"),
+            "formula": ("decision_expand_score (THE ranking basis) = "
+                        "fee_apr_pct * fee_apr_weight "
+                        "+ realisable_dividend_usd * dividend_weight "
+                        "+ reward_per_HIVE_APR_equivalent (x365 annualized, "
+                        "honest pool TVL) * rph_weight "
+                        "+ reward_token_count * token_weight; "
+                        "then x viability factor (threshold distance) and "
+                        "top-up dilution. legacy_fee_only_score is a "
+                        "descriptive fee-only recompute that OMITS the "
+                        "dividend and per-HIVE terms — never compare it to "
+                        "the ranking or treat its ordering as the decision's."),
             "fee_apr_weight": _LD.FEE_APR_SCORE_WEIGHT,
             "reward_token_weight": _LD.REWARD_TOKEN_SCORE_WEIGHT,
             "viability_note": (
@@ -205,9 +224,17 @@ def adjudicate(decision: dict, rec_verdicts: dict) -> dict:
             "far_threshold_penalty": _LD.FAR_THRESHOLD_PENALTY,
         }
         for p in pools:
-            p["combined_score"] = round(
-                (p["fee_apr_pct"] or 0) * basis["fee_apr_weight"]
-                + (p["reward_token_count"] or 0) * basis["reward_token_weight"], 3)
+            # 2026-10-17 FIX: KeyError guard — entries carry
+            # fee_apr_pct_authoritative (or the divergent twin), never a
+            # plain fee_apr_pct, so the old p["fee_apr_pct"] crashed the
+            # basis block and the advisory challenged on missing data.
+            # The recompute stays descriptive-only, clearly labeled.
+            _fee = (p.get("fee_apr_pct_authoritative")
+                    if p.get("fee_apr_pct_authoritative") is not None
+                    else p.get("fee_apr_pct_divergent_NOT_FOR_USE")) or 0
+            p["legacy_fee_only_score"] = round(
+                _fee * basis["fee_apr_weight"]
+                + (p.get("reward_token_count") or 0) * basis["reward_token_weight"], 3)
     except Exception as _exc:
         # 2026-10-08: the old fallback text GUESSED "lp_decision not
         # importable" — a misdiagnosis that cost a debugging cycle (the
