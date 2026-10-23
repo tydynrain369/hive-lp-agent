@@ -639,6 +639,9 @@ class PortfolioManager:
         self.pe = price_engine
         self.balances: Dict[str, TokenBalance] = {}
         self.positions: Dict[str, LPPosition] = {}
+        # 2026-10-22: the position-assessment orchestration reads the
+        # account name from the portfolio it is handed.
+        self.account = ACCOUNT
 
     def load_balances(self):
         raw = he("find", {

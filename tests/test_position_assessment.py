@@ -63,13 +63,6 @@ class AssessmentTests(unittest.TestCase):
         self.assertEqual(decide.call_args.args[0]['participants'], self.data['participants'])
         self.assertTrue(any(p.get('offset', 0) >= 1000 for _, p in self.calls))
 
-    @unittest.skip("2026-10-22 triage: this orchestration (cron.manage_positions "
-                   "calling lp_position_assessment.assess_positions and feeding "
-                   "lp_candidate_screen without conditional evidence) is NOT wired "
-                   "in the current cron snapshot — zero references in cron_lp_agent. "
-                   "The modules exist and pass their own unit tests; wiring them into "
-                   "the live hourly cron is an OPEN ITEM (see AUTONOMY_LOG 2026-10-22). "
-                   "Restored when the position-assessment integration lands.")
     def test_cron_reports_without_feeding_conditional_evidence_to_selector(self):
         agent = SimpleNamespace(pe=SimpleNamespace(token_precisions={}),
                                 portfolio=SimpleNamespace(account='hermes-sandbox', balances={}, positions={}))
@@ -83,9 +76,6 @@ class AssessmentTests(unittest.TestCase):
         self.assertIs(agent.position_assessment, report)
         self.assertNotIn('economic_evidence', screen.call_args.kwargs)
 
-    @unittest.skip("2026-10-22 triage: same never-wired orchestration as above — "
-                   "cron.manage_positions does not currently call the position "
-                   "assessment pipeline; OPEN ITEM until the integration lands.")
     def test_cron_assessment_failure_stays_observe(self):
         agent = SimpleNamespace(pe=SimpleNamespace(token_precisions={}),
                                 portfolio=SimpleNamespace(account='hermes-sandbox', balances={}, positions={}))

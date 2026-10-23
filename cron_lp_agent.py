@@ -318,6 +318,7 @@ def run_lp_tests(agent, reward_discovery, cfg):
             # ---- DUST-LEVEL LOGIC: Use ACTUAL wallet balance, not hardcoded minimum ----
             # Get the config's min_quantity as a CAP (don't test with more than this)
             # But use whatever is actually available in the wallet
+            have_qty = 0.0   # 2026-10-22: bound on every path (Pyright)
             if token_symbol:
                 token_bal = agent.portfolio.balances.get(token_symbol)
                 have_qty = float(getattr(token_bal, "balance", 0) or 0) if token_bal else 0
@@ -439,159 +440,72 @@ def run_lp_tests(agent, reward_discovery, cfg):
 
     return active_tests
 def manage_positions(agent, reward_discovery):
-    """Manage LP positions: exit zombies, enter high-reward pools."""
+    """Position-management pipeline (2026-10-22 wiring of the
+    test_position_assessment contract — previously never wired):
+
+      1. pool rows: lp_pool_assessment.assess_pools (per-pool direct-amount
+         mechanics)
+      2. position assessment: lp_position_assessment.assess_positions via
+         PUBLIC reads only (cron's he) — stored on the agent for the
+         report pipeline
+      3. candidate screen: lp_candidate_screen.screen over fresh pool
+         rows. The position assessment is CONDITIONAL scenario evidence:
+         it is deliberately NOT passed as economic_evidence to the selector
+         (screen-to-selector evidence boundary — conditional reports must
+         never silently become economic evidence).
+
+    Failure of the position assessment fails SAFE: decision stays 'observe',
+    nothing feeds the selector, and an empty action list returns. The
+    screen's selection is ADVISORY — capital motion stays with the
+    decision layer and its guard stack, never here.
+    """
+    import time as _t
+    import lp_pool_assessment
+    import lp_position_assessment
+    import lp_candidate_screen
+
     print("  Scanning positions for management actions...")
-    
-    # Get zombie pools from agent
-    zombie_positions = agent.portfolio.get_zombie_positions() if hasattr(agent.portfolio, 'get_zombie_positions') else []
-    zombie_pool_ids = {z['pool_id'] for z in zombie_positions}
-    
-    actions = []
-    
-    # 1. Exit zombie pools
-    for z in zombie_positions:
-        pid = z['pool_id']
-        pos = next((p for p in agent.portfolio.positions.values() if p.pool_id == pid), None)
-        if pos and pos.shares > 0:
-            actions.append({
-                'type': 'exit',
-                'pair': pid,
-                'reason': 'zombie_pool',
-                'shares': pos.shares
-            })
-    
-    # 2. Exit positions with no active rewards (if value > $1)
-    for pid, pos in agent.portfolio.positions.items():
-        if pid in zombie_pool_ids:
-            continue
-        if pos.value_usd > 1.0:
-            # Check if this pool has active rewards
-            has_rewards = False
-            for reward_token, infos in reward_discovery.items():
-                for info in infos:
-                    mined = info['mined_token']
-                    if f":{mined}" in pid or f"{mined}:" in pid:
-                        has_rewards = True
-                        break
-                if has_rewards:
-                    break
-            if not has_rewards:
-                actions.append({
-                    'type': 'exit',
-                    'pair': pid,
-                    'reason': 'no_active_rewards',
-                    'shares': pos.shares
-                })
-    
-    # 3. Enter top reward pools we're not in (max 2 per run)
-    entered = 0
-    current_positions = set(agent.portfolio.positions.keys())
-    
-    # Score pools: reward_value + volume_bonus + liquidity_moat
-    scored_pools = []
-    for pool_pair, infos in reward_discovery.items():
-        if pool_pair in current_positions:
-            continue
-        pool = agent.pe.pools.get(pool_pair)
-        if not pool:
-            continue
-        # Get pool stats: liquidity (depth) + volume (fees)
-        # Use PoolData fields: liquidity_usd, volume_24h, fees_24h
-        liq_score = pool.liquidity_usd if hasattr(pool, 'liquidity_usd') else 0
-        vol_score = pool.volume_24h if hasattr(pool, 'volume_24h') else 0
-        fee_apr = pool.apr if hasattr(pool, 'apr') else 0
-        
-        reward_value = sum(info['daily_reward'] * agent.pe.token_prices.get(info['mined_token'], 0) for info in infos)
-        
-        # Composite score: reward value * 5 (main), volume * 2 (fees), liquidity * 0.001 (small bonus)
-        score = (reward_value * 5 +
-                 vol_score * 2 +
-                 liq_score * 0.001 +
-                 fee_apr * 0.1)          # APR bonus
-        
-        scored_pools.append({
-            'pool': pool_pair,
-            'score': score,
-            'reward_value': reward_value,
-            'reward_tokens': [i['mined_token'] for i in infos],
-            'liquidity_score': liq_score,
-            'volume_24h': vol_score,
-        })
-    
-    # Sort by composite score
-    scored_pools.sort(key=lambda x: x['score'], reverse=True)
-    
-    # === SWAP-PATH AWARENESS ===
-    # For pools we lack tokens for, calculate if a swap of our most valuable asset gets us in.
-    # Our most valuable tokens by USD value: POB ($7.97), STFU ($0.0013), HEARTBEAT ($0.30), etc.
-    assets_by_value = sorted(
-        [(s, b.value_usd, b.balance) for s, b in agent.portfolio.balances.items() if b.balance > 0],
-        key=lambda x: x[1], reverse=True
-    )
-    
-    for t in scored_pools:
-        if entered >= 2:
-            break
-        if t['pool'] not in current_positions:
-            pool = agent.pe.pools.get(t['pool'])
-            if pool:
-                base, quote = pool.base, pool.quote
-                base_bal = agent.portfolio.balances.get(base)
-                quote_bal = agent.portfolio.balances.get(quote)
-                base_val = base_bal.value_usd if base_bal else 0
-                quote_val = quote_bal.value_usd if quote_bal else 0
-                direct_possible = base_val + quote_val >= 1.0
-                
-                # SWAP-PATH: If we can't enter directly, try via our best assets
-                swap_path_note = ''
-                if not direct_possible and assets_by_value:
-                    best_asset, best_val, best_qty = assets_by_value[0]
-                    if best_asset != base and best_asset != quote:
-                        # Estimate conversion: best_asset -> base or best_asset -> quote
-                        # Simplified: assume half of best asset converts to each side
-                        half_val = best_val / 2
-                        conv_to_base = half_val / max(agent.pe.token_prices.get(base, float('inf')), 1e-8)
-                        conv_to_quote = half_val / max(agent.pe.token_prices.get(quote, float('inf')), 1e-8)
-                        conv_base_val = conv_to_base * agent.pe.token_prices.get(base, 0)
-                        conv_quote_val = conv_to_quote * agent.pe.token_prices.get(quote, 0)
-                        if conv_base_val + conv_quote_val >= 1.0:
-                            swap_path_note = f' [via swap {best_asset}→base+quote]'
-                            direct_possible = False  # Mark as swap-path entry
-                
-                if direct_possible or swap_path_note:
-                    actions.append({
-                        'type': 'enter',
-                        'pair': t['pool'],
-                        'reason': f'high_reward (daily={t["reward_tokens"][:3]}) score={t["score"]:.0f} liq=${t["liquidity_score"]:.0f} vol=${t["volume_24h"]:.0f}{swap_path_note}',
-                        'score': t['score'],
-                        'reward_tokens': t['reward_tokens'],
-                        'swap_path': bool(swap_path_note),
-                    })
-                    entered += 1
-    
-    print(f"  Planned actions: {len(actions)}")
-    for a in actions:
-        if a['type'] == 'exit':
-            print(f"    EXIT {a['pair']}: {a['reason']}")
-        else:
-            print(f"    ENTER {a['pair']}: {a['reason']} (score: {a['score']:.1f})")
-    
-    # Execute (dry-run mode for safety)
-    print("  [DRY-RUN] Skipping execution - remove dry-run guard to enable")
-    # Uncomment below to enable real execution:
-    # for action in actions:
-    #     if action['type'] == 'exit':
-    #         pair = action['pair']
-    #         pos = next((p for p in agent.portfolio.positions.values() if p.pool_id == pair), None)
-    #         if pos and pos.shares > 0:
-    #             try:
-    #                 success = agent.executor.remove_liquidity(pos.base, pos.quote, 100.0)
-    #                 print(f"    ✓ Removed 100% ({pos.shares:.4f} shares) from {pair}" if success else f"    ✗ Failed to exit {pair}")
-    #             except Exception as e:
-    #                 print(f"    ✗ ERROR exiting {pair}: {e}")
+    rows = lp_pool_assessment.assess_pools(agent.pe, agent.portfolio,
+                                           reward_discovery)
+    try:
+        report = lp_position_assessment.assess_positions(
+            he, agent.portfolio.account)
+    except Exception as e:
+        # Fail closed: an unreadable landscape is not permission to act.
+        agent.position_assessment = {'decision': 'observe',
+                                     'error': str(e),
+                                     'transactions_submitted': 0}
+        print(f"  Position assessment failed — staying observe: {e}")
+        return []
+    agent.position_assessment = report
+    try:
+        raw_pools = he('find', {'contract': 'marketpools',
+                                'table': 'pools', 'query': {},
+                                'limit': 1000})
+        contract = he('getContract', {'name': 'marketpools'})
+        code_hash = (contract.get('codeHash')
+                     if isinstance(contract, dict) else None)
+    except Exception as e:
+        print(f"  Candidate screen inputs unavailable: {e}")
+        return []
+    try:
+        out = lp_candidate_screen.screen(rows, raw_pools,
+                                         agent.pe.token_precisions,
+                                         agent.portfolio.balances,
+                                         agent.portfolio.positions,
+                                         int(_t.time() * 1000), code_hash)
+    except Exception as e:
+        # The screen is an ASSESSMENT layer — a failure here must degrade to
+        # 'no selection', never kill the tick (2026-10-22: the first live run
+        # crashed the whole main through exactly this path).
+        print(f"  Candidate screen failed (non-fatal): {type(e).__name__}: {e}")
+        return []
+    return out.get('selection', [])
 
 
-# ---- Fee evidence snapshots (read-only, longitudinal attribution) ----
+# 2026-10-22: restored — the manage_positions rewrite's line-range
+# replacement accidentally swallowed this module constant (caught by the
+# dry-run regression test walking the real main).
 FEE_SNAPSHOT_STORE = os.path.expanduser('~/.hermes/lp_tests/fee_snapshots.jsonl')
 
 
@@ -862,6 +776,11 @@ def main():
 
     # ---- RECOMMENDATION (read-only advisory; never auto-executes) ----
     print("\n=== RECOMMENDATION ===")
+    # 2026-10-22: pre-bound on every path — if this step fails (non-fatal),
+    # the DECISION section below reads rec/held_pools and a NameError there
+    # would degrade the entire decision, masked as another soft failure.
+    rec = None
+    held_pools = []
     try:
         held_pools = sorted(agent.portfolio.positions.keys())
         # 2026-09-30: pass pool+position so the report can show OUR
@@ -897,10 +816,18 @@ def main():
         # 2026-09-30: feed the realized economics and threshold distance into the
         # decision layer, otherwise every position defaults to "hold" forever
         # and the agent can never act on a concentration strategy.
-        eco_map = {p: v.get("position_economics") for p, v in rec["verdicts"].items()
-                   if v.get("position_economics")}
-        th_map = {p: v.get("threshold_analysis") for p, v in rec["verdicts"].items()
-                  if v.get("threshold_analysis")}
+        # 2026-10-22: rec is pre-bound (None on recommendation failure) —
+        # guard the decision inputs instead of NameError-ing into the
+        # decision try's soft-catch and silently degrading the whole verdict.
+        eco_map = {}
+        th_map = {}
+        if rec:
+            eco_map = {p: v.get("position_economics")
+                       for p, v in rec["verdicts"].items()
+                       if v.get("position_economics")}
+            th_map = {p: v.get("threshold_analysis")
+                      for p, v in rec["verdicts"].items()
+                      if v.get("threshold_analysis")}
         # 2026-10-02: bid/ask spreads so a dividend paid in unsellable tokens
         # cannot score as income. Derived from the liquidity verdicts the
         # PriceEngine already gathered, so no extra network cost.

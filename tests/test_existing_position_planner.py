@@ -32,7 +32,7 @@ class ExistingPositionPlannerTest(unittest.TestCase):
             [{'pool': 'A:B', 'direct_amounts': {'A': '1', 'B': '1'}}],
             [pool], {'A': 8, 'B': 8},
             {s: SimpleNamespace(balance='2') for s in ('A', 'B')},
-            {'A:B': SimpleNamespace(shares='10', time_factor=0)},
+            {'A:B': SimpleNamespace(shares='10', time_factor_ms=0)},
             now, MARKETPOOLS_HASH, economic_evidence=evidence)
         self.assertEqual(result['selection']['selected'], [])
         self.assertEqual(result['selection']['reserved'], {})
@@ -48,7 +48,7 @@ class ExistingPositionPlannerTest(unittest.TestCase):
                 'quoteQuantity': '100', 'totalShares': '100', 'precision': 8}
         rows = [{'pool': 'A:B', 'direct_amounts': {'A': '1', 'B': '1'}}]
         wallet = {s: SimpleNamespace(balance='2') for s in ('A', 'B')}
-        positions = {'A:B': SimpleNamespace(shares='10', time_factor=0)}
+        positions = {'A:B': SimpleNamespace(shares='10', time_factor_ms=0)}
         quote = add_liquidity(pool, '1', '1', {'A': 8, 'B': 8},
                               {'A': '2', 'B': '2'}, now,
                               {'shares': '10', 'timeFactor': 0})

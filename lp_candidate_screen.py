@@ -27,7 +27,10 @@ def screen(rows,raw_pools,precisions,balances,positions,at_ms,code_hash,*,econom
         else:
             try:
                 pool=pools[pair];a,b=pair.split(':');pos=positions.get(pair)
-                prior={'shares':str(pos.shares),'timeFactor':pos.time_factor} if pos else None
+                # 2026-10-22: LPPosition carries time_factor_ms (renamed in
+                # the 2026-10-07 age-bonus work); the prior wire-up never ran
+                # against live data, so this drifted. Output key unchanged.
+                prior={'shares':str(pos.shares),'timeFactor':pos.time_factor_ms} if pos else None
                 quote=add_liquidity(pool,row['direct_amounts'][a],row['direct_amounts'][b],
                                     precisions,wallet,at_ms,prior)
                 candidate.update(mechanics_verified=True,quote=quote,spend=quote['amounts'],
