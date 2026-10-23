@@ -34,158 +34,158 @@ def discover_rewards(pe, portfolio):
     Falls back to mining lottery for pools not in distribution contract.
     Returns: {pool_pair: [{"mined_token": symbol, "daily_reward": est, "type": "distribution"}, ...]}"""
     reward_discovery = {}
+    # --- Primary: Distribution contract (pool rewards) ---
+    dist = he('find', {'contract': 'distribution', 'table': 'batches',
+                      'query': {'active': True, 'strategy': 'pool'}, 'limit': 1000})
+    # 2026-10-07 FIX (live bug): the tick length is a contract PARAM, not a
+    # batch field. The old code read b.get('tickHours') or
+    # b.get('distributionPeriodHours') — fields that DO NOT EXIST on batch
+    # rows — so period_hours was always None downstream. lp_reward_math and
+    # lp_position_scenario already read the deployed params; mirror them.
     try:
-        # --- Primary: Distribution contract (pool rewards) ---
-        dist = he('find', {'contract': 'distribution', 'table': 'batches',
-                          'query': {'active': True, 'strategy': 'pool'}, 'limit': 1000})
-        # 2026-10-07 FIX (live bug): the tick length is a contract PARAM, not a
-        # batch field. The old code read b.get('tickHours') or
-        # b.get('distributionPeriodHours') — fields that DO NOT EXIST on batch
-        # rows — so period_hours was always None downstream. lp_reward_math and
-        # lp_position_scenario already read the deployed params; mirror them.
-        try:
-            dp = he('findOne', {'contract': 'distribution', 'table': 'params', 'query': {}}) or {}
-        except Exception:
-            dp = {}
+        dp = he('findOne', {'contract': 'distribution', 'table': 'params', 'query': {}}) or {}
+    except Exception:
+        dp = {}
+    dist_tick_hours = None
+    try:
+        dist_tick_hours = float(dp.get('distTickHours', 0) or 0) or None
+    except (TypeError, ValueError):
         dist_tick_hours = None
+    for b in dist:
+        pair = b.get('tokenPair', '')
+        if not pair:
+            continue
+        # 2026-10-08 FIX (multi-batch bug #1b): exhausted batches
+        # (numTicksLeft=0) never pay again — the deployed scheduler
+        # consumes ticks, and with none left the remaining tokenBalances
+        # are dead budget, not income. Reporting them made exhausted
+        # batches look like live reward streams (phantom presence and
+        # phantom value). Filter at the source. Per the standing rule:
+        # an expired batch coexisting with a live replacement is normal —
+        # only the LIVE replacement's entries survive this filter.
         try:
-            dist_tick_hours = float(dp.get('distTickHours', 0) or 0) or None
+            _ticks_left = int(b.get('numTicksLeft', 0) or 0)
         except (TypeError, ValueError):
-            dist_tick_hours = None
-        for b in dist:
-            pair = b.get('tokenPair', '')
-            if not pair:
-                continue
-            # 2026-10-08 FIX (multi-batch bug #1b): exhausted batches
-            # (numTicksLeft=0) never pay again — the deployed scheduler
-            # consumes ticks, and with none left the remaining tokenBalances
-            # are dead budget, not income. Reporting them made exhausted
-            # batches look like live reward streams (phantom presence and
-            # phantom value). Filter at the source. Per the standing rule:
-            # an expired batch coexisting with a live replacement is normal —
-            # only the LIVE replacement's entries survive this filter.
-            try:
-                _ticks_left = int(b.get('numTicksLeft', 0) or 0)
-            except (TypeError, ValueError):
-                _ticks_left = 0
-            # 2026-10-08 FIX (multi-batch bug #1a): ACCUMULATE entries across
-            # ALL live batches of a pool instead of overwriting — assignment
-            # kept only the LAST batch, so a pool paying through two
-            # concurrent contracts silently lost the other's entire income
-            # from scoring. Live cases: 36 pools run >1 batch (DVS:DHEDGE:
-            # batch 179 with 124 ticks left AND batch 329 with 626 ticks left
-            # — whichever processed last erased the other from the decision).
-            # exhausted-filter (bug #1b) above: only batches with ticks LEFT
-            # produce entries, so accumulation counts live income only.
-            # The exhausted-batch skip below this block is retained as a
-            # second guard (belt and braces) — see #1b.
-            if _ticks_left <= 0:
-                continue
-            # 2026-10-08: batch-scoped metadata. Fields a pool can differ on
-            # across batches (curve, our position age, runway) are PER-BATCH
-            # facts; the consumer must never read the last batch's value as
-            # the pool's. days_remaining uses the MAX across live batches
-            # (most optimistic runway is the honest bound for 'does this
-            # pool still pay'), and entries carry their own curve so dilution
-            # math stays per-batch.
-            tokens = b.get('tokenBalances', [])
-            # 2026-09-30: these figures are the ENTIRE batch's tokenBalances
-            # divided by numTicks — i.e. the whole distribution spread across all
-            # LPs, not our share, and not a per-day figure in a literal sense.
-            # Dividing by numTicks converts a 7-day batch into a per-tick amount;
-            # the number is therefore "per tick, for the whole pool", which is
-            # only equal to a daily figure when numTicks is 1. Tydyn confirmed
-            # this reading directly: the values looked like whole-period
-            # distribution totals rather than his own earnings. Report the
-            # denominator explicitly instead of asserting "per day", and do NOT
-            # compare these magnitudes across tokens — deflationary high-supply
-            # tokens (e.g. THREE, quoted in billions) are not comparable to
-            # low-supply ones without a price map.
-            num_ticks = int(b.get('numTicks', 1))
-            total_qty = sum(float(t.get('quantity', 0)) for t in tokens)
-            # 2026-10-07: tickHours fix — use the contract param, fall back to the
-            # declared one-tick-per-day equivalence (Tydyn 2026-10-02), never a
-            # nonexistent batch field.
-            tick_hours = dist_tick_hours  # contract param, verified source
-            # 2026-10-07: carry the age-bonus data the decision layer needs to
-            # score top-up dilution (PsyopDaily mechanics, browser-verified
-            # 2026-10-07): the batch's bonusCurve plus OUR position's timeFactor.
-            # Both are already in hand (batch row; our position row) — no extra
-            # network calls. The age bonus applies per BATCH, and one pool can
-            # carry multiple active batches, so the curve rides each entry.
-            # days_remaining: reward-batch runway (PsyopDaily flags under 14
-            # days as 'rewards end soon'). numTicksLeft x tickHours, using the
-            # contract param fixed earlier this session.
-            our_tf = None
-            _pos = portfolio.positions.get(pair)
-            if _pos is not None:
-                our_tf = float(getattr(_pos, 'time_factor_ms', 0) or 0) or None
-            try:
-                _ticks_left = int(b.get('numTicksLeft', 0) or 0)
-                _days_left = _ticks_left * (tick_hours or 24.0) / 24.0
-            except (TypeError, ValueError):
-                _days_left = None
-            reward_discovery.setdefault(pair, []).extend([{
-                'mined_token': t['symbol'],
-                'daily_reward': float(t['quantity']) / max(num_ticks, 1),
-                'whole_batch_quantity': float(t['quantity']),
-                'num_ticks': num_ticks,
-                'period_hours': tick_hours,
-                'denominator': 'whole batch tokenBalances / numTicks (NOT our share)',
-                'units_comparable_across_tokens': False,
-                'lottery_winners': 0,  # pool distribution, not lottery
-                'lottery_interval_hours': 24,
-                'token_balance': float(t['quantity']),
-                'type': 'distribution',
-                # ---- age-bonus fields (2026-10-07) ----
-                'bonus_curve': b.get('bonusCurve'),
-                'our_time_factor_ms': our_tf,
-                'tick_hours': tick_hours,
-                'days_remaining': _days_left,
-                # ---- batch-scoped identity (2026-10-08) ----
-                'batch_id': str(b.get('_id', '')),
-                'batch_ticks_left': _ticks_left,
-            } for t in tokens])
-        print(f"  DEBUG: distribution contract returned {len(dist)} pools")
-        # --- Secondary: Mining contract (lottery rewards) ---
-        mining = he('find', {'contract': 'mining', 'table': 'pools', 'query': {}})
-        for m in mining:
-            if not m.get('active'):
-                continue
-            external_miners = m.get('externalMiners', '')
-            mined_token = m.get('minedToken', '')
-            # 2026-10-08 FIX (multi-stream bug #2): the old
-            # `external_miners not in reward_discovery` guard made a pool
-            # paying through BOTH the distribution contract AND the mining
-            # lottery lose its ENTIRE lottery income the moment any
-            # distribution batch existed for it — the two streams are
-            # independent income and must both score. Live cases:
-            # SWAP.HIVE:PAL and MEME:LOLZ. Accumulate alongside
-            # distribution entries instead of skipping.
-            if external_miners:
-                lottery_winners = int(m.get('lotteryWinners', 0))
-                lottery_interval = float(m.get('lotteryIntervalHours', 24))
-                lottery_amount = float(m.get('lotteryAmount', 0))
-                daily_lotteries = 24 / lottery_interval if lottery_interval > 0 else 0
-                daily_reward = lottery_amount * lottery_winners * daily_lotteries
-                # 2026-10-08 FIX (multi-stream bug #2b): EXTEND, not assign.
-                # The removed skip-guard was accidentally masking a SECOND
-                # overwrite bug: mining assignment would have REPLACED the
-                # distribution entries of any dual-stream pool. Both
-                # streams are independent income; accumulate.
-                reward_discovery.setdefault(external_miners, []).extend([{
-                    'mined_token': mined_token,
-                    'daily_reward': daily_reward,
-                    'lottery_winners': lottery_winners,
-                    'lottery_interval_hours': lottery_interval,
-                    'lottery_amount': lottery_amount,
-                    'type': 'mining'
-                }])
-        print(f"  DEBUG: total reward_discovery entries: {len(reward_discovery)} pools")
-    except Exception as e:
-        print(f"  ERROR in reward discovery: {e}")
-        import traceback
-        traceback.print_exc()
+            _ticks_left = 0
+        # 2026-10-08 FIX (multi-batch bug #1a): ACCUMULATE entries across
+        # ALL live batches of a pool instead of overwriting — assignment
+        # kept only the LAST batch, so a pool paying through two
+        # concurrent contracts silently lost the other's entire income
+        # from scoring. Live cases: 36 pools run >1 batch (DVS:DHEDGE:
+        # batch 179 with 124 ticks left AND batch 329 with 626 ticks left
+        # — whichever processed last erased the other from the decision).
+        # exhausted-filter (bug #1b) above: only batches with ticks LEFT
+        # produce entries, so accumulation counts live income only.
+        # The exhausted-batch skip below this block is retained as a
+        # second guard (belt and braces) — see #1b.
+        if _ticks_left <= 0:
+            continue
+        # 2026-10-08: batch-scoped metadata. Fields a pool can differ on
+        # across batches (curve, our position age, runway) are PER-BATCH
+        # facts; the consumer must never read the last batch's value as
+        # the pool's. days_remaining uses the MAX across live batches
+        # (most optimistic runway is the honest bound for 'does this
+        # pool still pay'), and entries carry their own curve so dilution
+        # math stays per-batch.
+        tokens = b.get('tokenBalances', [])
+        # 2026-09-30: these figures are the ENTIRE batch's tokenBalances
+        # divided by numTicks — i.e. the whole distribution spread across all
+        # LPs, not our share, and not a per-day figure in a literal sense.
+        # Dividing by numTicks converts a 7-day batch into a per-tick amount;
+        # the number is therefore "per tick, for the whole pool", which is
+        # only equal to a daily figure when numTicks is 1. Tydyn confirmed
+        # this reading directly: the values looked like whole-period
+        # distribution totals rather than his own earnings. Report the
+        # denominator explicitly instead of asserting "per day", and do NOT
+        # compare these magnitudes across tokens — deflationary high-supply
+        # tokens (e.g. THREE, quoted in billions) are not comparable to
+        # low-supply ones without a price map.
+        num_ticks = int(b.get('numTicks', 1))
+        total_qty = sum(float(t.get('quantity', 0)) for t in tokens)
+        # 2026-10-07: tickHours fix — use the contract param, fall back to the
+        # declared one-tick-per-day equivalence (Tydyn 2026-10-02), never a
+        # nonexistent batch field.
+        tick_hours = dist_tick_hours  # contract param, verified source
+        # 2026-10-07: carry the age-bonus data the decision layer needs to
+        # score top-up dilution (PsyopDaily mechanics, browser-verified
+        # 2026-10-07): the batch's bonusCurve plus OUR position's timeFactor.
+        # Both are already in hand (batch row; our position row) — no extra
+        # network calls. The age bonus applies per BATCH, and one pool can
+        # carry multiple active batches, so the curve rides each entry.
+        # days_remaining: reward-batch runway (PsyopDaily flags under 14
+        # days as 'rewards end soon'). numTicksLeft x tickHours, using the
+        # contract param fixed earlier this session.
+        our_tf = None
+        _pos = portfolio.positions.get(pair)
+        if _pos is not None:
+            our_tf = float(getattr(_pos, 'time_factor_ms', 0) or 0) or None
+        try:
+            _ticks_left = int(b.get('numTicksLeft', 0) or 0)
+            _days_left = _ticks_left * (tick_hours or 24.0) / 24.0
+        except (TypeError, ValueError):
+            _days_left = None
+        reward_discovery.setdefault(pair, []).extend([{
+            'mined_token': t['symbol'],
+            'daily_reward': float(t['quantity']) / max(num_ticks, 1),
+            'whole_batch_quantity': float(t['quantity']),
+            'num_ticks': num_ticks,
+            'period_hours': tick_hours,
+            'denominator': 'whole batch tokenBalances / numTicks (NOT our share)',
+            'units_comparable_across_tokens': False,
+            'lottery_winners': 0,  # pool distribution, not lottery
+            'lottery_interval_hours': 24,
+            'token_balance': float(t['quantity']),
+            'type': 'distribution',
+            # ---- age-bonus fields (2026-10-07) ----
+            'bonus_curve': b.get('bonusCurve'),
+            'our_time_factor_ms': our_tf,
+            'tick_hours': tick_hours,
+            'days_remaining': _days_left,
+            # ---- batch-scoped identity (2026-10-08) ----
+            'batch_id': str(b.get('_id', '')),
+            'batch_ticks_left': _ticks_left,
+        } for t in tokens])
+    print(f"  DEBUG: distribution contract returned {len(dist)} pools")
+    # --- Secondary: Mining contract (lottery rewards) ---
+    mining = he('find', {'contract': 'mining', 'table': 'pools', 'query': {}})
+    for m in mining:
+        if not m.get('active'):
+            continue
+        external_miners = m.get('externalMiners', '')
+        mined_token = m.get('minedToken', '')
+        # 2026-10-08 FIX (multi-stream bug #2): the old
+        # `external_miners not in reward_discovery` guard made a pool
+        # paying through BOTH the distribution contract AND the mining
+        # lottery lose its ENTIRE lottery income the moment any
+        # distribution batch existed for it — the two streams are
+        # independent income and must both score. Live cases:
+        # SWAP.HIVE:PAL and MEME:LOLZ. Accumulate alongside
+        # distribution entries instead of skipping.
+        if external_miners:
+            lottery_winners = int(m.get('lotteryWinners', 0))
+            lottery_interval = float(m.get('lotteryIntervalHours', 24))
+            lottery_amount = float(m.get('lotteryAmount', 0))
+            daily_lotteries = 24 / lottery_interval if lottery_interval > 0 else 0
+            daily_reward = lottery_amount * lottery_winners * daily_lotteries
+            # 2026-10-08 FIX (multi-stream bug #2b): EXTEND, not assign.
+            # The removed skip-guard was accidentally masking a SECOND
+            # overwrite bug: mining assignment would have REPLACED the
+            # distribution entries of any dual-stream pool. Both
+            # streams are independent income; accumulate.
+            reward_discovery.setdefault(external_miners, []).extend([{
+                'mined_token': mined_token,
+                'daily_reward': daily_reward,
+                'lottery_winners': lottery_winners,
+                'lottery_interval_hours': lottery_interval,
+                'lottery_amount': lottery_amount,
+                'type': 'mining'
+            }])
+    print(f"  DEBUG: total reward_discovery entries: {len(reward_discovery)} pools")
+    # 2026-10-22: the broad try/except that used to wrap this body SWALLOWED
+    # RPC failures into a silently empty landscape — a failed probe is not
+    # evidence of absence (pinned: test_rpc_failure_not_empty_landscape).
+    # The cron main's own wrapper provides the resilience; failures now
+    # propagate to it loudly.
     return reward_discovery
 
 
@@ -358,6 +358,11 @@ def run_lp_tests(agent, reward_discovery, cfg):
     #    This is the "leverage what exists" path that doesn't depend on reward contracts.
     preferred_quote_tokens = {"SWAP.HIVE", "SWAP.BTC", "POB", "CENT", "ALIVE", "BBH", "BEE", "WAIV", "HEARTBEAT"}
     min_price_usd = 0.00001  # ignore effectively zero-priced tokens
+    # 2026-10-22: current_positions was NEVER DEFINED in run_lp_tests — a
+    # latent NameError (Pyright caught it; the live cron never reached it
+    # only while every candidate pool was already in reward_discovery).
+    # Same definition as manage_positions uses.
+    current_positions = set(agent.portfolio.positions.keys())
     for sym, tb in agent.portfolio.balances.items():
         if active_tests >= cfg["max_concurrent_tests"]:
             break
@@ -816,7 +821,14 @@ def main():
 
     total = agent.portfolio.total_value()
     idle = agent.portfolio.idle_value()
-    print(f"Portfolio: ${total:.4f} (idle: ${idle:.4f})")
+    # total_value is None when any position is UNPRICED — an unknown is not
+    # a zero and must not be formatted as one
+    if total is None:
+        print("Portfolio: value UNKNOWN (unpriced positions: "
+              f"{agent.portfolio.valuation_summary()['unpriced_positions']}); "
+              f"idle: ${idle:.4f}")
+    else:
+        print(f"Portfolio: ${total:.4f} (idle: ${idle:.4f})")
     print(f"Positions: {len(agent.portfolio.positions)}")
 
     # ---- REWARD DISCOVERY ----

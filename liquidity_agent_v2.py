@@ -4,6 +4,7 @@ Hive Liquidity Agent v2 — Autonomous DeFi agent for @hermes-sandbox
 Full price discovery, pool health scoring, autonomous execution.
 """
 import json
+import os
 import time
 import logging
 from datetime import datetime
@@ -17,6 +18,13 @@ logging.getLogger("urllib3").setLevel(logging.ERROR)
 # ─── Config ──────────────────────────────────────────────────────────
 HIVE_RPC = "https://api.deathwing.me"
 HE_RPC = "https://api.hive-engine.com/rpc/contracts"
+# 2026-10-22: the account NAME for public reads. It is already public in
+# this codebase (docstring, load_balances query) and in our own artifacts
+# (fee_snapshots rows); only the KEYS are secret and they stay in the vault.
+# Public reads must never open the vault (pinned: test_position_valuation's
+# open-forbidden patch). Env-overridable for the multi-account future.
+ACCOUNT = os.environ.get("LP_ACCOUNT", "hermes-sandbox")
+
 VAULT_PATH = "/mnt/vault/Hermes-Keys/hermes-sandbox.json"
 SCAN_INTERVAL = 300  # 5 min
 
@@ -128,7 +136,12 @@ class TokenBalance:
     balance: float = 0.0
     staked: float = 0.0
     price_usd: float = 0.0
+    # 2026-10-22 spec restore: value_usd is the LIQUID value only
+    # (balance x price); staked value is reported separately — folding
+    # stake into value_usd overstated deployable capital (pinned:
+    # test_liquid_excludes_stake).
     value_usd: float = 0.0
+    staked_value_usd: float = 0.0
 
 @dataclass
 class LPPosition:
@@ -138,7 +151,9 @@ class LPPosition:
     shares: float
     base_deposited: float
     quote_deposited: float
-    value_usd: float = 0.0
+    # Optional[float]: None = value UNKNOWN (missing/invalid USD price) —
+    # never silently 0 (pinned: test_missing_price_is_unknown).
+    value_usd: Optional[float] = None
     apr: float = 0.0
     # 2026-10-07: chain timeFactor (ms) of our liquidity-position row — the
     # timestamp the position was last touched (deposit/top-up rebase it).
@@ -167,6 +182,15 @@ class PoolData:
     # honestly once prices exist (volume_24h itself is recomputed there).
     base_volume: float = 0.0
     quote_volume: float = 0.0
+
+    @property
+    def fee_observation_status(self) -> str:
+        """2026-10-22 spec restore (pinned: test_unknown_fee_has_explicit_status).
+        Pool-level data carries NO longitudinal fee observation — that
+        evidence is account-scoped in the fee snapshot store. 'unknown' is
+        the honest answer at this layer; a missing status must never read
+        as 'measured'."""
+        return "unknown"
 
 # ─── Price Engine ───────────────────────────────────────────────────
 class PriceEngine:
@@ -220,10 +244,22 @@ class PriceEngine:
             self.token_precisions.setdefault(sym, prec)
 
     def round_amount(self, symbol: str, amount: float) -> float:
-        """Round amount to token's precision."""
-        prec = self.token_precisions.get(symbol, 8)
-        factor = 10 ** prec
-        return round(amount * factor) / factor
+        """Floor-round to the token's precision.
+
+        2026-10-22 spec restore (pinned: test_floor_never_overspends,
+        test_unknown_precision_not_invented): a deploy sized by rounding UP
+        can exceed the wallet balance — floor, never round-half. And an
+        unknown symbol REFUSES rather than inventing precision 8: an
+        unpriced token yields a refusal that NAMES the token, never a
+        fabricated quantity.
+        """
+        prec = self.token_precisions.get(symbol)
+        if prec is None:
+            raise ValueError(
+                f"unknown precision for {symbol!r}: refusing to size "
+                f"capital against an invented precision")
+        import math
+        return math.floor(amount * 10 ** prec) / 10 ** prec
 
     def _get_live_hive_price(self) -> float:
         """Query live HIVE price from witness feed (HIVE:HBD ratio)."""
@@ -333,6 +369,15 @@ class PriceEngine:
         
         def _derive_prices():
             changed_any = False
+            # 2026-10-22 determinism restore (pinned:
+            # test_order_independent_deeper_known_side): the previous
+            # last-write-wins loop was silently iteration-order dependent —
+            # a token priced from two pools got whichever pool the dict
+            # reached last, contradicting the deepest-liquidity comment.
+            # Collect ALL candidates for this round, then commit the
+            # deepest-known-side figure per symbol: order-independent and
+            # matching the documented intent.
+            candidates = {}
             for pool in self.pools.values():
                 base, quote = pool.base, pool.quote
                 rB, rQ = pool.base_reserve, pool.quote_reserve
@@ -340,27 +385,27 @@ class PriceEngine:
                     continue
                 b_known = self.token_prices.get(base, 0)
                 q_known = self.token_prices.get(quote, 0)
-                
-                # derive quote from base
+
+                # derive quote from base: quote_usd = (rB * base_usd) / rQ
                 if b_known > 0 and q_known == 0:
-                    # base_price = quote_per_base (e.g., SWAP.HIVE per CENT)
-                    # But safer to derive from reserves: quote_per_base = rQ / rB
-                    implied_q_per_b = rQ / rB
-                    # quote_usd = implied_q_per_b * base_usd  ... NO.
-                    # Actually: rB * base_usd ≈ rQ * quote_usd (balanced pool)
-                    # So quote_usd ≈ (rB * base_usd) / rQ
-                    quote_usd = (rB * b_known) / rQ
-                    if quote_usd > 0:
-                        self.token_prices[quote] = quote_usd
-                        changed_any = True
-                
-                # derive base from quote
+                    price = (rB * b_known) / rQ
+                    weight = rB * b_known   # USD depth of the known side
+                    cur = candidates.get(quote)
+                    if cur is None or weight > cur[0]:
+                        candidates[quote] = (weight, price)
+
+                # derive base from quote: base_usd = (rQ * quote_usd) / rB
                 elif q_known > 0 and b_known == 0:
-                    base_usd = (rQ * q_known) / rB
-                    if base_usd > 0:
-                        self.token_prices[base] = base_usd
-                        changed_any = True
-            
+                    price = (rQ * q_known) / rB
+                    weight = rQ * q_known
+                    cur = candidates.get(base)
+                    if cur is None or weight > cur[0]:
+                        candidates[base] = (weight, price)
+
+            for sym, (_weight, price) in candidates.items():
+                if price > 0:
+                    self.token_prices[sym] = price
+                    changed_any = True
             return changed_any
         
         # Iterate until no more prices can be derived (max 10 rounds)
@@ -597,89 +642,110 @@ class PortfolioManager:
 
     def load_balances(self):
         raw = he("find", {
-            "contract": "tokens", "table": "balances", 
-            "query": {"account": "hermes-sandbox"}, "limit": 200
+            "contract": "tokens", "table": "balances",
+            "query": {"account": ACCOUNT}, "limit": 200
         })
         for b in raw:
             sym = b.get("symbol", "")
             bal = float(b.get("balance", 0))
             staked = float(b.get("stake", 0))
             price = self.pe.token_prices.get(sym, 0)
-            self.balances[sym] = TokenBalance(sym, bal, staked, price, (bal + staked) * price)
+            # 2026-10-22 spec restore: LIQUID value only in value_usd;
+            # staked value reported separately (pinned: test_liquid_excludes_stake).
+            self.balances[sym] = TokenBalance(sym, bal, staked, price,
+                                              bal * price, staked * price)
 
     def load_positions(self):
-        """Load LP positions using nectarengine's get_liquidity_positions."""
-        from nectarengine.pool import LiquidityPool
-        from nectar import Hive
-        import json
-        
-        acct = json.load(open(VAULT_PATH))
-        hive = Hive(node=[HIVE_RPC], keys={acct["account"]: acct["active"]})
-        lp = LiquidityPool(blockchain_instance=hive)
-        
-        try:
-            positions = lp.get_liquidity_positions(acct["account"])
-            for p in positions:
-                try:
-                    token_pair = p.get("tokenPair", "")
-                    if ":" not in token_pair:
-                        continue
-                    base, quote = token_pair.split(":", 1)
-                    shares = float(p.get("shares", 0))
-                    
-                    # Get deposited amounts from pool data or estimate from shares
-                    pool = self.pe.get_pool(base, quote)
-                    base_dep = 0.0
-                    quote_dep = 0.0
-                    if pool and pool.total_shares > 0:
-                        base_dep = shares / pool.total_shares * pool.base_quantity
-                        quote_dep = shares / pool.total_shares * pool.quote_quantity
-                    
-                    val = 0.0
-                    apr = 0.0
-                    if pool:
-                        # 2026-09-30: this was STILL the mixed-unit bug that was
-                        # fixed for pools on 2026-09-20 but never for held
-                        # POSITIONS. pool.base_price / pool.quote_price are
-                        # exchange ratios (how many quote tokens per base
-                        # token), NOT USD prices. Multiplying a deposited
-                        # amount by a ratio and summing as USD inflated the
-                        # portfolio ~9,500x: it reported $13.85 for positions
-                        # actually worth $0.0015. Tydyn caught it — "way more
-                        # than we have."
-                        # Correct form: amount * USD price, per token, from the
-                        # separately validated token-price map. A missing price
-                        # must read as UNKNOWN, never as 0 (which would silently
-                        # understate) and never as a ratio.
-                        p_base = self.pe.token_prices.get(base)
-                        p_quote = self.pe.token_prices.get(quote)
-                        if p_base is not None and p_quote is not None:
-                            val = (base_dep * p_base) + (quote_dep * p_quote)
-                        else:
-                            val = 0.0
-                            missing = [t for t, v in
-                                       ((base, p_base), (quote, p_quote)) if v is None]
-                            print(f"  Warning: no USD price for {missing} in {token_pair}"
-                                  f" — value unknown, reported as 0")
-                        apr = pool.apr
-                    
-                    pid = f"{base}:{quote}"
-                    self.positions[pid] = LPPosition(pid, base, quote, shares, base_dep, quote_dep, val, apr,
-                                                      time_factor_ms=float(p.get("timeFactor", 0) or 0))
-                except Exception as e:
-                    print(f"  Warning: Failed to parse position {p}: {e}")
+        """Load LP positions via the PUBLIC RPC — reads never open the key
+        vault (pinned: test_position_valuation's open-forbidden patch; the
+        nectarengine rewrite loaded keys just to read public rows). Reload
+        REPLACES: stale positions must not survive (pinned:
+        test_reload_removes_stale_positions). Missing/invalid USD prices
+        read as UNKNOWN (None), never 0."""
+        import math
+        self.positions = {}
+        rows = he("find", {
+            "contract": "marketpools", "table": "liquidityPositions",
+            "query": {"account": ACCOUNT}, "limit": 200
+        })
+        for p in rows:
+            try:
+                token_pair = p.get("tokenPair", "")
+                if ":" not in token_pair:
                     continue
-        except Exception as e:
-            print(f"  Warning: Failed to load positions: {e}")
+                base, quote = token_pair.split(":", 1)
+                shares = float(p.get("shares", 0))
 
-    def total_value(self) -> float:
-        return sum(tb.value_usd for tb in self.balances.values()) + sum(p.value_usd for p in self.positions.values())
+                # Get deposited amounts from pool data
+                pool = self.pe.get_pool(base, quote)
+                base_dep = 0.0
+                quote_dep = 0.0
+                if pool and pool.total_shares > 0:
+                    base_dep = shares / pool.total_shares * pool.base_quantity
+                    quote_dep = shares / pool.total_shares * pool.quote_quantity
+
+                val = None
+                apr = 0.0
+                if pool:
+                    # 2026-09-30 (kept): pool.base_price/quote_price are
+                    # exchange ratios, NOT USD — value from the validated
+                    # USD price map, per token. A missing price is UNKNOWN
+                    # (None), never 0 (which would silently understate).
+                    p_base = self.pe.token_prices.get(base)
+                    p_quote = self.pe.token_prices.get(quote)
+                    valid_base = p_base is not None and p_base > 0 and math.isfinite(p_base)
+                    valid_quote = p_quote is not None and p_quote > 0 and math.isfinite(p_quote)
+                    if valid_base and valid_quote:
+                        assert p_base is not None and p_quote is not None
+                        val = (base_dep * p_base) + (quote_dep * p_quote)
+                    else:
+                        val = None
+                        missing = [t for t, v, ok in
+                                   ((base, p_base, valid_base),
+                                    (quote, p_quote, valid_quote)) if not ok]
+                        print(f"  Warning: no valid USD price for {missing} in "
+                              f"{token_pair} — value UNKNOWN, reported as None")
+                    apr = pool.apr
+
+                pid = f"{base}:{quote}"
+                self.positions[pid] = LPPosition(pid, base, quote, shares, base_dep, quote_dep, val, apr,
+                                                  time_factor_ms=float(p.get("timeFactor", 0) or 0))
+            except Exception as e:
+                print(f"  Warning: Failed to parse position {p}: {e}")
+                continue
+
+    def total_value(self):
+        """None when ANY position's value is unknown — an unknown is not a
+        zero and must not be folded into a completed-looking total (pinned:
+        test_unknown_total_is_not_complete_value)."""
+        total = sum(tb.value_usd for tb in self.balances.values())
+        for p in self.positions.values():
+            if p.value_usd is None:
+                return None
+            total += p.value_usd
+        return total
+
+    def valuation_summary(self):
+        """2026-10-22 spec restore (pinned by test_position_valuation): the
+        report must say WHICH positions are unpriced instead of implying
+        uniform coverage."""
+        return {"total_usd": self.total_value(),
+                "unpriced_positions": sorted(
+                    pid for pid, p in self.positions.items()
+                    if p.value_usd is None),
+                "position_count": len(self.positions),
+                "balance_count": len(self.balances)}
 
     def lp_value(self) -> float:
-        return sum(p.value_usd for p in self.positions.values())
+        known = [p.value_usd for p in self.positions.values()
+                 if p.value_usd is not None]
+        return sum(known)
 
     def idle_value(self) -> float:
-        return sum(tb.value_usd for tb in self.balances.values() if tb.value_usd > 0.0001)
+        # 2026-10-22 spec restore: pure sum — dust is NOT filtered from the
+        # valuation (pinned: test_dust_is_not_filtered_from_idle; the 1e-4
+        # display filter belongs to printing, not to measurement).
+        return sum(tb.value_usd for tb in self.balances.values())
 
 # ─── Pool Analyzer ──────────────────────────────────────────────────
 class PoolAnalyzer:
@@ -1104,7 +1170,13 @@ class StrategyEngine:
         self.portfolio.load_positions()
         
         total_val = self.portfolio.total_value()
-        print(f"\nTotal Portfolio Value: ${total_val:.4f}")
+        # total_value is None when any position is UNPRICED — say so instead
+        # of crashing the report (pinned: test_unknown_total_is_not_complete_value)
+        if total_val is None:
+            print("\nTotal Portfolio Value: UNKNOWN (unpriced positions: "
+                  f"{self.portfolio.valuation_summary()['unpriced_positions']})")
+        else:
+            print(f"\nTotal Portfolio Value: ${total_val:.4f}")
         
         # Show unstaking schedule
         self._print_unstaking_schedule()
@@ -1374,9 +1446,25 @@ class LiquidityAgent:
         self.pe = PriceEngine()
         self.portfolio = PortfolioManager(self.pe)
         self.analyzer = PoolAnalyzer(self.pe, self.portfolio)
-        self.executor = ExecutionEngine(self.pe, self.portfolio)
-        self.strategy = StrategyEngine(self.pe, self.portfolio, self.analyzer, self.executor)
         self.reallocator = ReallocationPlanner(self.pe, self.portfolio, self.analyzer)
+        # 2026-10-22 spec restore (pinned: test_cron_dry_run): the executor
+        # loads the KEY VAULT in its constructor, so a dry-run tick must
+        # never construct it — lazy properties, constructed only on first
+        # actual use by the live paths.
+        self._executor = None
+        self._strategy = None
+
+    @property
+    def executor(self):
+        if self._executor is None:
+            self._executor = ExecutionEngine(self.pe, self.portfolio)
+        return self._executor
+
+    @property
+    def strategy(self):
+        if self._strategy is None:
+            self._strategy = StrategyEngine(self.pe, self.portfolio, self.analyzer, self.executor)
+        return self._strategy
 
     def run(self):
         print(f"\n🛸 HIVE LIQUIDITY AGENT v2 — @hermes-sandbox")

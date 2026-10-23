@@ -69,8 +69,13 @@ class CronFeeWiringTest(unittest.TestCase):
                                 positions={'A:B': object()}, store_path=store, at_ms=2000)
                 diff = out['results']['A:B']['diff']
                 self.assertEqual(diff['status'], 'measured')
-                # share = 10/100 = 1/10; growth = 4 A + 6 B -> 0.4 A, 0.6 B
-                self.assertEqual(diff['attributable_fees'], {'A': '0.4', 'B': '0.6'})
+                # 2026-10-22 re-pin: share = 10/100 = 1/10; growth = 4 A + 6 B
+                # -> OUR share of the NET RESERVE MOVEMENT: 0.4 A, 0.6 B.
+                # Reserve deltas are NOT fees (fee truth is volume-based);
+                # attributable_fees is None by contract.
+                self.assertIsNone(diff['attributable_fees'])
+                self.assertEqual(diff['reserve_movement']['A']['our_share_of_delta'], '0.4')
+                self.assertEqual(diff['reserve_movement']['B']['our_share_of_delta'], '0.6')
 
     def test_rpc_failure_recorded_not_raised(self):
         for path in CRON_PATHS:

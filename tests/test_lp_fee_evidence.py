@@ -47,18 +47,26 @@ class DiffTests(unittest.TestCase):
         return snapshot_fee_state(fake_rpc(pool=pool,position=posr(pos)),'alice','AAA:BBB',at_ms=at)
     def test_constant_share_fee_growth_exact(self):
         # reserves grow 1000->1100 base, 2000->2100 quote; share 25/100=1/4
+        # 2026-10-22 re-pin: reserve deltas are reported as NET RESERVE
+        # MOVEMENT (whole-pool delta + our share), NEVER as fees — the
+        # attributable_fees field is None and fee truth is volume-based.
         before=self.snap(at=1); after=self.snap(base='1100',quote='2100',at=2)
         d=diff_fee_snapshots(before,after)
         self.assertEqual(d['status'],'measured')
-        self.assertEqual(d['attributable_fees']['AAA'],'25')
-        self.assertEqual(d['attributable_fees']['BBB'],'25')
+        self.assertIsNone(d['attributable_fees'])
+        self.assertIn('NOT fees', d['fee_basis'])
+        self.assertEqual(d['reserve_movement']['AAA']['net_reserve_delta'],'100')
+        self.assertEqual(d['reserve_movement']['AAA']['our_share_of_delta'],'25')
+        self.assertEqual(d['reserve_movement']['BBB']['net_reserve_delta'],'100')
+        self.assertEqual(d['reserve_movement']['BBB']['our_share_of_delta'],'25')
     def test_fractional_attribution_exact(self):
-        # share 25/100 = 1/4; base grows by 5 -> 5/4; precision 8
+        # share 25/100 = 1/4; base grows by 5 -> our 5/4; precision 8
         before=self.snap(at=1); after=self.snap(base='1005',quote='2004',at=2)
         d=diff_fee_snapshots(before,after)
         self.assertEqual(d['status'],'measured')
-        self.assertEqual(d['attributable_fees']['AAA'],_fmt_amount(Fraction(5,4),8))
-        self.assertEqual(d['attributable_fees']['BBB'],_fmt_amount(Fraction(1,1),8))
+        self.assertIsNone(d['attributable_fees'])
+        self.assertEqual(d['reserve_movement']['AAA']['our_share_of_delta'],_fmt_amount(Fraction(5,4),8))
+        self.assertEqual(d['reserve_movement']['BBB']['our_share_of_delta'],_fmt_amount(Fraction(1,1),8))
     def test_totalshares_changed_unmeasured(self):
         before=self.snap(at=1)
         after=self.snap(shares='110',base='1100',quote='2200',at=2)
@@ -78,15 +86,18 @@ class DiffTests(unittest.TestCase):
         after=self.snap(base='999',quote='2000',at=2)
         d=diff_fee_snapshots(before,after)
         self.assertEqual(d['status'],'measured')
-        self.assertEqual(d['attributable_fees']['AAA'],'-0.25')
+        self.assertIsNone(d['attributable_fees'])
+        self.assertEqual(d['reserve_movement']['AAA']['net_reserve_delta'],'-1')
+        self.assertEqual(d['reserve_movement']['AAA']['our_share_of_delta'],'-0.25')
     def test_zero_precision_token_exactness(self):
         before=self.snap(at=1,prec=0)
         after=self.snap(base='1005',quote='2004',at=2,prec=0)
         d=diff_fee_snapshots(before,after)
         self.assertEqual(d['status'],'measured')
+        self.assertIsNone(d['attributable_fees'])
         # 5/4 at precision 0 rounds DOWN to '1'; 1 -> '1'
-        self.assertEqual(d['attributable_fees']['AAA'],'1')
-        self.assertEqual(d['attributable_fees']['BBB'],'1')
+        self.assertEqual(d['reserve_movement']['AAA']['our_share_of_delta'],'1')
+        self.assertEqual(d['reserve_movement']['BBB']['our_share_of_delta'],'1')
     def test_snapshot_only_status(self):
         s=self.snap(at=1)
         self.assertEqual(s.get('measurement_status'),'snapshot_recorded')
@@ -129,7 +140,10 @@ class NoFloatLeakageTests(unittest.TestCase):
                 for x in v: walk(x)
         walk(s); walk(d)
         # share components are digit strings
-        self.assertTrue(d['attributable_fees']['AAA'].lstrip('-').replace('.','').isdigit())
+        self.assertTrue(
+            d['reserve_movement']['AAA']['our_share_of_delta']
+            .lstrip('-').replace('.','').isdigit())
+        self.assertIsNone(d['attributable_fees'])
 
 class FmtTests(unittest.TestCase):
     def test_fmt_amount_precision(self):
