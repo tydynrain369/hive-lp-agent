@@ -908,9 +908,14 @@ def execute_idle_deploy(agent, plan, allow_execute):
     from nectar import Hive
     from nectarengine.pool import LiquidityPool
     from liquidity_agent_v2 import HIVE_RPC, VAULT_PATH
+    from lp_broadcast_guard import broadcast_once_hive
     creds = json.load(open(VAULT_PATH))
-    hive = Hive(node=[HIVE_RPC],
-                keys={creds["account"]: creds["active"]})
+    # BROADCAST-ONCE (ops #222/#223 guard, see lp_broadcast_guard.py): this
+    # instance's ONLY traffic is broadcasts — reads go through direct RPC
+    # above (_find/_bal/_ratio) — so any RPC failure must raise, never
+    # auto-retry and re-send the same signed transaction.
+    hive = broadcast_once_hive(node=[HIVE_RPC],
+                               keys={creds["account"]: creds["active"]})
     lp = LiquidityPool(blockchain_instance=hive)
 
     def _swap_leg(out_sym, leg_amount):

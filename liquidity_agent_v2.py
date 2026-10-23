@@ -939,9 +939,10 @@ class ReallocationPlanner:
                 self.portfolio.load_positions()
                 # Use executor to remove
                 from nectarengine.pool import LiquidityPool
-                from nectar import Hive
+                from lp_broadcast_guard import broadcast_once_hive
                 acct = json.load(open(VAULT_PATH))
-                hive = Hive(node=[HIVE_RPC], keys={acct["account"]: acct["active"]})
+                # BROADCAST-ONCE: remove_liquidity broadcasts; never auto-retry (lp_broadcast_guard.py)
+                hive = broadcast_once_hive(node=[HIVE_RPC], keys={acct["account"]: acct["active"]})
                 lp = LiquidityPool(blockchain_instance=hive)
                 result = lp.remove_liquidity(acct["account"], z['pool'], z['our_shares'])
                 if result:
@@ -996,9 +997,10 @@ class ReallocationPlanner:
         print(f"  → Adding LP: {base_deploy:.6f} {pool.base} + {quote_deploy:.6f} {pool.quote} ({pool.pool_id})")
         
         from nectarengine.pool import LiquidityPool
-        from nectar import Hive
+        from lp_broadcast_guard import broadcast_once_hive
         acct = json.load(open(VAULT_PATH))
-        hive = Hive(node=[HIVE_RPC], keys={acct["account"]: acct["active"]})
+        # BROADCAST-ONCE: add_liquidity broadcasts; never auto-retry (lp_broadcast_guard.py)
+        hive = broadcast_once_hive(node=[HIVE_RPC], keys={acct["account"]: acct["active"]})
         lp = LiquidityPool(blockchain_instance=hive)
         result = lp.add_liquidity(acct["account"], f"{pool.base}:{pool.quote}", base_deploy, quote_deploy, max_deviation=1)
         if result:
@@ -1012,8 +1014,11 @@ class ExecutionEngine:
         self.pe = price_engine
         self.portfolio = portfolio
         self.acct = json.load(open(VAULT_PATH))
-        from nectar import Hive
-        self.hive = Hive(node=[HIVE_RPC], keys={self.acct["account"]: self.acct["active"]})
+        from lp_broadcast_guard import broadcast_once_hive
+        # BROADCAST-ONCE: self.hive feeds ONLY swap/add/remove broadcasts
+        # (Market at :1030, LiquidityPool at :1047/:1066) — never reads —
+        # so RPC failures must raise, never auto-retry (lp_broadcast_guard.py).
+        self.hive = broadcast_once_hive(node=[HIVE_RPC], keys={self.acct["account"]: self.acct["active"]})
 
     def swap(self, from_sym: str, to_sym: str, amount: float, slippage: float = 0.02) -> bool:
         """Execute a swap via Hive Engine market."""
