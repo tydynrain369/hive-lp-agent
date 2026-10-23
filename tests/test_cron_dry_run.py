@@ -33,6 +33,14 @@ import liquidity_agent_v2 as m
 
 class CronTests(unittest.TestCase):
     def test_dry_run_main_never_constructs_executor_or_tracker(self):
+        # LEAK INVARIANT: capture the LIVE artifact state first — this test
+        # must leave it byte-for-byte untouched (a 2026-10-22 leak through a
+        # hardcoded path overwrote the live decision file; that class is
+        # sealed, and this assert makes any regression loud).
+        live_dir = Path('/home/tydynrain/.hermes/lp_tests/decisions')
+        live_today = live_dir / ('decision-%s.json' %
+                                 __import__('datetime').date.today().strftime('%Y%m%d'))
+        live_mtime = live_today.stat().st_mtime if live_today.exists() else None
         def rpc(method, p):
             if method == 'getContract':
                 return {'codeHash': 'fixture'}
@@ -67,6 +75,13 @@ class CronTests(unittest.TestCase):
         sandbox_state = Path(_TMP) / '.hermes' / 'lp_tests'
         self.assertTrue(sandbox_state.exists(),
                         "dry-run main wrote no state into the sandbox HOME")
+        # LEAK INVARIANT (see capture above): the LIVE decision file must be
+        # byte-for-byte untouched by this test run.
+        if live_mtime is not None:
+            self.assertEqual(live_today.stat().st_mtime, live_mtime,
+                             "the dry-run test TOUCHED the live decision "
+                             "artifact — a sandbox leak through a hardcoded "
+                             "path; seal it before running again")
 
 
 if __name__ == '__main__':

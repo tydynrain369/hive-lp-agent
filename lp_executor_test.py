@@ -20,7 +20,8 @@ import os
 import time
 from datetime import datetime
 
-EXECUTIONS_LOG = "/home/tydynrain/.hermes/lp_tests/test_executions.jsonl"
+# 2026-10-22: expanduser, NOT hardcoded (test-sandbox leak class — see lp_decision.DECISIONS_DIR)
+EXECUTIONS_LOG = os.path.expanduser('~/.hermes/lp_tests/test_executions.jsonl')
 
 MAX_USD_PER_ACTION = float(os.environ.get("LP_TEST_MAX_USD", "0.05"))
 LIVE_MODE = os.environ.get("LP_TEST_LIVE", "") == "1"

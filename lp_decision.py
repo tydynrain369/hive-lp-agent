@@ -94,8 +94,14 @@ MIN_REWARD_USD_PER_TICK_EXCLUSIVE = 0.05
 NEAR_THRESHOLD_BONUS = 0.6      # bonus multiplier at multiple <= 1.0x
 FAR_THRESHOLD_PENALTY = 0.25    # penalty multiplier at multiple >= 25x
 
-SNAPSHOT_PATH = "/home/tydynrain/.hermes/lp_tests/fee_snapshots.jsonl"
-DECISIONS_DIR = "/home/tydynrain/.hermes/lp_tests/decisions"
+# 2026-10-22: expanduser, NOT hardcoded (test-sandbox leak class — see DECISIONS_DIR)
+SNAPSHOT_PATH = os.path.expanduser('~/.hermes/lp_tests/fee_snapshots.jsonl')
+# 2026-10-22: expanduser, NOT hardcoded — the dry-run regression test
+# sandboxes HOME, and a hardcoded absolute path let the test overwrite the
+# LIVE decision artifact (caught post-hoc; hourly tick rewrites it, but a
+# test must never be able to touch live state). Matches FEE_SNAPSHOT_STORE's
+# pattern in cron_lp_agent.
+DECISIONS_DIR = os.path.expanduser('~/.hermes/lp_tests/decisions')
 
 # Minimum evidence thresholds (measured, not aspirational)
 MIN_FEE_APR_FOR_PRODUCTIVE = 0.10  # 0.10% pool-side APR from snapshot windows
