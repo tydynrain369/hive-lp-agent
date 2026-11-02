@@ -728,7 +728,15 @@ def main():
 
 IDLE_DEPLOY_THROTTLE = os.path.expanduser(
     "~/.hermes/lp_tests/LAST_IDLE_DEPLOY")
-IDLE_DEPLOY_MIN_USD = 0.03   # below this the TX cost manages nothing
+IDLE_DEPLOY_MIN_USD = 0.0005   # 2026-11-01: was 0.03 — the wallet holds
+                                  # ~0.026 SWAP.HIVE (~$0.0015), so the old
+                                  # floor was 20x the total idle capital and
+                                  # the agent could never deploy. USD is an
+                                  # arbitrary unit here; the capability
+                                  # (swap legs, ratio-matched add, on-chain
+                                  # verify) works at any size. 0.0005 keeps
+                                  # the gate meaningful below dust while the
+                                  # once-per-day throttle prevents looping.
 
 
 def _today_str():
@@ -898,7 +906,14 @@ def execute_idle_deploy(agent, plan, allow_execute):
     budget_hive = min(
         budget_usd / hive_px if hive_px > 0 else 0.0,
         pre_hive * 0.98)          # never touch the last 2% (fees)
-    if budget_hive <= 0.10 * 0.0525 / 0.0525:  # sanity floor
+    # 2026-11-01: was `<= 0.10` (a bare 0.10 HIVE literal, unrelated to
+    # the deploy floor). With ~0.026 SWAP.HIVE idle this gate fired before
+    # the USD floor even evaluated, so the agent could never deploy at any
+    # price. The real requirement is just "not a degenerate swap": below
+    # 0.001 HIVE a marketpools swap produces a min_amount_out of zero and
+    # the contract rejects it. When hive_px is known the USD floor above
+    # (line 789) already covers this; this is the px-less fallback.
+    if budget_hive <= 0.001:
         plan["executed"] = False
         plan["reason"] = f"budget_hive {budget_hive:.6f} too small"
         return plan
