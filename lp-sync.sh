@@ -141,10 +141,16 @@ if [ "$COMMIT" -eq 1 ]; then
   else
     git add -A
     git commit -q -m "lp-sync: promote live runtime tree -> repo (${passed:-suite ok})"
-    if [ "$PUSH" -eq 1 ]; then
-      git push -q origin main && echo "lp-sync: committed + pushed"
+    echo "lp-sync: committed locally"
+  fi
+  # Push independently of whether THIS run had anything to commit: the daily
+  # guard commits with --local, so origin can legitimately lag behind a clean
+  # working tree.
+  if [ "$PUSH" -eq 1 ]; then
+    if [ -n "$(git log --oneline origin/main..HEAD 2>/dev/null)" ]; then
+      git push -q origin main && echo "lp-sync: pushed to origin/main"
     else
-      echo "lp-sync: committed locally (push deliberately with --commit)"
+      echo "lp-sync: origin/main already current"
     fi
   fi
 fi
