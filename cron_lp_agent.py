@@ -507,8 +507,17 @@ def manage_positions(agent, reward_discovery):
                 _pool = _a.get('id')
                 if _pool:
                     economic_evidence[_pool] = _a
+        _rej = _ea.get('rejected') or []
         print(f"  Evidence: {len(economic_evidence)} pools with joint "
-              f"allocation evidence ({len(_ea.get('rejected') or [])} rejected)")
+              f"allocation evidence ({len(_rej)} rejected)")
+        # A bare rejection COUNT reads as silence: 12 rejected tells you the
+        # pipeline is dormant but not why. Surface the dominant causes so the
+        # next tick's log is actionable rather than merely honest.
+        if _rej:
+            from collections import Counter
+            for _why, _n in Counter(
+                    r.get('reason', '?') for r in _rej).most_common(5):
+                print(f"    rejected x{_n}: {_why}")
     except Exception as e:
         # Non-fatal: the screen degrades to evidence-less screening, never
         # the tick dies (2026-10-22: the first live run crashed the whole
