@@ -33,7 +33,11 @@
 # USAGE
 #   lp-sync.sh            promote live -> repo, verify, run the suite
 #   lp-sync.sh --check    verify only; no copy and no suite (fast drift alarm)
-#   lp-sync.sh --commit   promote + verify + suite, then commit + push
+#   lp-sync.sh --local    promote + verify + suite, then commit LOCALLY
+#   lp-sync.sh --commit   as --local, then push to origin
+#
+# Publishing is deliberately NOT automatic: --local keeps the mirror current
+# and lossless, while putting code on the remote stays a reviewed act.
 #
 # EXIT  0 ok | 1 drift detected | 2 suite failed | 64 usage
 set -uo pipefail
@@ -44,11 +48,13 @@ VENV="${REPO}/.venv/bin/python"
 
 MODE=run
 COMMIT=0
+PUSH=0
 case "${1:-}" in
   "")        ;;
   --check)   MODE=check ;;
-  --commit)  COMMIT=1 ;;
-  *) echo "usage: lp-sync.sh [--check|--commit]" >&2; exit 64 ;;
+  --local)   COMMIT=1 ;;
+  --commit)  COMMIT=1; PUSH=1 ;;
+  *) echo "usage: lp-sync.sh [--check|--local|--commit]" >&2; exit 64 ;;
 esac
 
 [ -d "$REPO/.git" ] || { echo "lp-sync: no git repo at $REPO" >&2; exit 64; }
@@ -135,7 +141,11 @@ if [ "$COMMIT" -eq 1 ]; then
   else
     git add -A
     git commit -q -m "lp-sync: promote live runtime tree -> repo (${passed:-suite ok})"
-    git push -q origin main && echo "lp-sync: committed + pushed"
+    if [ "$PUSH" -eq 1 ]; then
+      git push -q origin main && echo "lp-sync: committed + pushed"
+    else
+      echo "lp-sync: committed locally (push deliberately with --commit)"
+    fi
   fi
 fi
 exit 0
