@@ -738,23 +738,48 @@ IDLE_DEPLOY_MIN_USD = 0.0005   # 2026-11-01: was 0.03 — the wallet holds
                                   # the gate meaningful below dust while the
                                   # once-per-day throttle prevents looping.
 
+# 2026-11-01: the throttle was once-per-calendar-day, keyed on a date
+# string. That was never the binding constraint: each deploy sizes to
+# ~98% of idle SWAP.HIVE (two swap legs), so ONE deploy empties the
+# deployable pool regardless of how often the cron fires. Windowing it
+# instead keeps the real anti-dust-loop intent — at least N hours between
+# verified deploys — while letting the decision re-evaluate on every tick
+# if capital is actually available. The capital gates below (0.001 HIVE
+# floor, $0.05 cap) still refuse honestly when idle runs out.
+IDLE_DEPLOY_MIN_INTERVAL_HOURS = 6
 
-def _today_str():
-    from datetime import datetime
-    return datetime.utcnow().strftime("%Y-%m-%d")
+
+def _throttle_read():
+    try:
+        return open(IDLE_DEPLOY_THROTTLE).read().strip()
+    except Exception:
+        return None
 
 
 def _idle_deploy_throttled():
-    try:
-        return open(IDLE_DEPLOY_THROTTLE).read().strip() == _today_str()
-    except Exception:
+    from datetime import datetime, timezone
+    ts = _throttle_read()
+    if not ts:
         return False
+    try:
+        last = datetime.fromisoformat(ts)
+    except Exception:
+        # the file predates the windowed format (e.g. the old date-string
+        # throttle, "2026-10-17"). A naive timestamp cannot be compared
+        # against an aware one — treat it as stale so the first deploy
+        # after the upgrade is not silently blocked.
+        return False
+    if last.tzinfo is None:
+        return False
+    elapsed = (datetime.now(timezone.utc) - last).total_seconds() / 3600.0
+    return elapsed < IDLE_DEPLOY_MIN_INTERVAL_HOURS
 
 
 def _mark_idle_deploy():
+    from datetime import datetime, timezone
     try:
         with open(IDLE_DEPLOY_THROTTLE, "w") as fh:
-            fh.write(_today_str())
+            fh.write(datetime.now(timezone.utc).isoformat())
     except Exception:
         pass
 
@@ -762,14 +787,23 @@ def _mark_idle_deploy():
 def plan_idle_deploy(agent, decision, advisory=None):
     """Gate-stack a from-idle deployment; NEVER broadcasts."""
     out = {"action": "none", "mode": "deploy_idle"}
-    dst = (decision.get("expand_candidate") or "").strip()
+    # 2026-11-02: the priority ladder governs the destination (Tydyn's call).
+    # The ladder may name a rung the single-target reading demoted to 'hold' —
+    # spilling down a rung is the whole point — so 'hold' IS deployable when it
+    # is the ladder destination, while 'exit'/'consolidate' never are. Falls
+    # back to expand_candidate when no ladder was produced.
+    dst = (decision.get("ladder_destination")
+           or decision.get("expand_candidate") or "").strip()
     if not dst:
-        out["reason"] = "no expand candidate in the decision"
+        out["reason"] = "no expand/ladder destination in the decision"
         return out
     verdict = (decision.get("verdicts") or {}).get(dst) or {}
-    if verdict.get("action") != "expand":
-        out["reason"] = (f"{dst} verdict is {verdict.get('action')!r}, "
-                         "not 'expand'")
+    if verdict.get("action") not in ("expand", "hold") \
+            or verdict.get("expand_blocked_reason"):
+        out["reason"] = (f"{dst} verdict is {verdict.get('action')!r}"
+                         + (" (blocked as a destination)"
+                            if verdict.get("expand_blocked_reason") else "")
+                         + ", not a deployable destination")
         return out
     if advisory and advisory.get("verdict") == "CHALLENGE":
         out["action"] = "blocked"
@@ -1071,6 +1105,17 @@ def execute_idle_deploy(agent, plan, allow_execute):
     plan["executed"] = True
     plan["shares_delta"] = round(fin_shares - pre_shares, 8)
     _mark_idle_deploy()
+    # 2026-11-02: remember the fill so the priority ladder's dilution model ages
+    # correctly across ticks. ONLY on verified success; a state-write failure
+    # must never undo a deploy that already landed on chain (non-fatal).
+    try:
+        import lp_ladder as _LL
+        _LL.record_deploy(dst, float(plan.get("budget_usd") or 0.0))
+        plan["ladder_state_recorded"] = True
+    except Exception as _e:
+        plan["ladder_state_recorded"] = False
+        _log({"action": "ladder_state", "status": "record-failed",
+              "pool": dst, "error": type(_e).__name__})
     _log({"action": "deploy_idle", "status": "executed+verified",
           "pool": dst, "shares_delta": plan["shares_delta"],
           "steps": plan["steps"], "live": True,

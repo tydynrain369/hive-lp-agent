@@ -88,6 +88,16 @@ try:
 except Exception:  # noqa: BLE001
     MIN_REALISABLE_DIVIDEND_FRACTION = 0.5
 
+# 2026-11-02: priority-ladder (Tydyn's call — marginal-rate water-filling).
+# Imported lazily/guarded so a missing module degrades to "no ladder", never
+# a crash. The ladder is an ADDITIVE artifact: it refines the single-target
+# choice, it does not replace the composite expand_candidate.
+try:
+    from lp_ladder import marginal_rate_detail as _marginal_rate_detail
+except Exception:  # noqa: BLE001
+    def _marginal_rate_detail(*a, **k):  # pragma: no cover
+        return {"rate": None, "complete": False, "fee": None, "reward": None}
+
 MIN_REWARD_USD_PER_TICK_FOR_PRODUCTIVE = 0.01
 MIN_REWARD_USD_PER_TICK_EXCLUSIVE = 0.05
 
@@ -135,6 +145,17 @@ TOPUP_DILUTION_WEIGHT = 1.0
 # 0 disables the term (pre-2026-10-10 behaviour).
 REWARD_PER_HIVE_WEIGHT = 1.0
 HIVE_USD_ASSUMED = 0.057
+
+# --- priority-ladder viability weighting (2026-11-02, Tydyn's call) --------
+# The ladder ranks rungs by marginal rate (what the next dollar captures per
+# day). But the standing policy is explicit that a rate ALONE must not pick a
+# destination hundreds of multiples from clearing: accrual is linear in share,
+# so a far position may never earn at all. The ladder therefore weights each
+# rung's rate by the SAME distance-to-threshold viability factor the composite
+# score uses (1.6x at/above threshold down to 0.25x at >=25x away).
+# 1.0 = full weighting (consistent with the composite and the standing policy);
+# 0.0 = pure marginal rate. Continuous in between; named so it can be tuned.
+LADDER_VIABILITY_WEIGHT = 1.0
 
 # --- reward runway + exit liquidity (2026-10-07, PsyopDaily-verified) -------
 # A pool whose reward batches run out in under REWARD_RUNWAY_MIN_DAYS should
@@ -200,6 +221,9 @@ class PoolDecision:
     # 2026-10-07: destination-safety gates (PsyopDaily-verified mechanics).
     reward_days_remaining: Optional[float] = None  # runway from active batches
     expand_blocked_reason: Optional[str] = None    # why it cannot be a destination
+    # 2026-11-02: priority-ladder inputs (marginal-rate water-filling).
+    reward_per_hive: Optional[float] = None  # whole-pool USD/day per HIVE of TVL
+    tvl_usd: Optional[float] = None          # this pool's TVL in USD
 
 
 @dataclass
@@ -212,6 +236,13 @@ class DecisionReport:
     expand_candidate: Optional[str]   # highest-scoring productive pool
     recommended_reallocation: Optional[dict]   # {from_pool, to_pool, rationale}
     notes: list
+    # 2026-11-02: priority ladder (Tydyn's call). `ladder` is the ranked rung
+    # table (current marginal rate desc); `ladder_destination` is the pool the
+    # NEXT unit of capital should reach. It is always a member of the
+    # expand-capable candidate set, so it REFINES `expand_candidate` rather than
+    # competing with it — a divergence is reported in `notes`, never hidden.
+    ladder: Optional[list] = None
+    ladder_destination: Optional[str] = None
 
     def to_dict(self):
         d = asdict(self)
@@ -410,6 +441,20 @@ def decide(held_pools: list, reward_info: dict, fee_evidence: Optional[dict] = N
     """
     if fee_evidence is None:
         fee_evidence = load_fee_evidence()
+
+    # 2026-11-02: priority-ladder inputs (Tydyn's call). hive_usd anchors the
+    # reward component of a rung's per-dollar daily rate; _rung_inputs collects
+    # what each pool needs so the ladder is built ONCE, after the loop, from one
+    # consistent snapshot rather than re-deriving per pool.
+    _hive_usd = None
+    if price_map:
+        try:
+            _hive_usd = float(price_map.get("SWAP.HIVE")) or None
+        except (TypeError, ValueError):
+            _hive_usd = None
+    if not _hive_usd:
+        _hive_usd = HIVE_USD_ASSUMED
+    _rung_inputs = {}
 
     # 2026-10-05: pool lifecycle + operator/self-issued token filter.
     # A pool that has reached EOL or whose token is operator-issued/self-issued
@@ -815,6 +860,28 @@ def decide(held_pools: list, reward_info: dict, fee_evidence: Optional[dict] = N
             if (_expand_blocked_exit or _expand_blocked_runway) else None,
             )
 
+        # 2026-11-02: record this pool's ladder inputs (marginal-rate model).
+        # rate0_raw = fee_per_dollar_per_day + reward_per_dollar_per_day.
+        # rate0     = rate0_raw weighted by distance-to-threshold viability, per
+        #             the standing policy that a rate alone must not pick a
+        #             destination hundreds of multiples from clearing.
+        _rd_detail = _marginal_rate_detail(fee_apr, _reward_per_hive, _hive_usd)
+        _viab = _viability_factor(
+            (threshold_analysis or {}).get(pool) if threshold_analysis else None)
+        _rate_raw = _rd_detail["rate"]
+        _rate_eff = (_rate_raw * (1.0 + LADDER_VIABILITY_WEIGHT * (_viab - 1.0))
+                     if _rate_raw is not None else None)
+        _rung_inputs[pool] = {
+            "rate0": _rate_eff,
+            "rate0_raw": _rate_raw,
+            "viability": _viab,
+            "complete": _rd_detail["complete"],
+            "reward_per_hive": _reward_per_hive,
+            "tvl_hive": (pool_tvl_map or {}).get(pool) if pool_tvl_map else None,
+            "action": action,
+            "blocked": bool(_expand_blocked_runway or _expand_blocked_exit),
+        }
+
     # --- READING B: demote runner-up 'expand' pools to 'hold' ---------------
     # Done after scoring so the ranking that chose the winner is preserved,
     # and the demoted pool's reason states its rank rather than losing it.
@@ -836,6 +903,60 @@ def decide(held_pools: list, reward_info: dict, fee_evidence: Optional[dict] = N
                 f" — NOT the target: {expand_candidate} ranks higher, so this is a "
                 f"secondary candidate (rank {idx + 1}); hold the position and add "
                 f"no capital here until the target clears its threshold")
+
+    # --- PRIORITY LADDER (2026-11-02, Tydyn's call) ------------------------
+    # Marginal-rate water-filling over the SAME destination-capable candidate
+    # set the composite score ranks. ladder_destination = argmax CURRENT
+    # marginal rate (rate0 * V/(V+deployed)); it refines expand_candidate, it is
+    # never a different population. Capital-agnostic by design — the amount is
+    # decided at execution, where idle capital is actually known.
+    ladder = None
+    ladder_destination = None
+    ladder_excluded = []
+    try:
+        import lp_ladder as _LL
+        _state = _LL.load_state()
+        _rungs = []
+        for _p, _ri in _rung_inputs.items():
+            # Destinations only: 'exit' and 'consolidate' are RELEASE sources
+            # (their own reasons say "release this liquidity"), never rungs that
+            # receive new capital. 'hold' is included because READING B demotes
+            # every runner-up expand to 'hold' — those are exactly the rungs the
+            # ladder spills down to.
+            if _ri["action"] not in ("expand", "hold"):
+                continue
+            if _ri["blocked"]:
+                continue
+            _tv = _ri["tvl_hive"]
+            _rungs.append({
+                "pool": _p,
+                "rate0": _ri["rate0"],
+                "tvl_usd": (_tv * _hive_usd) if _tv is not None else None,
+                "deployed_usd": _LL.deployed_for(_state, _p),
+            })
+        _usable, ladder_excluded = _LL._clean_rungs(_rungs)
+        if _usable:
+            _ranked = sorted(
+                _usable,
+                key=lambda r: (-_LL.current_marginal_rate(r),
+                               -r["rate0"], r["pool"]))
+            ladder = [{
+                "pool": r["pool"],
+                "rate0": r["rate0"],
+                "rate0_raw": _rung_inputs[r["pool"]]["rate0_raw"],
+                "viability": _rung_inputs[r["pool"]]["viability"],
+                "rate_now": _LL.current_marginal_rate(r),
+                "tvl_usd": r["tvl_usd"],
+                "deployed_usd": r["deployed_usd"],
+                "complete": _rung_inputs[r["pool"]]["complete"],
+            } for r in _ranked]
+            ladder_destination = _ranked[0]["pool"]
+    except Exception as _le:
+        ladder = None
+        ladder_destination = None
+        notes_unpriced.append(
+            f"priority ladder unavailable ({type(_le).__name__}) — "
+            f"destination falls back to expand_candidate")
 
     recommended = None
     # 2026-10-02 FIX: a true zombie ("exit") is the preferred source, but a
@@ -871,6 +992,21 @@ def decide(held_pools: list, reward_info: dict, fee_evidence: Optional[dict] = N
         notes.append(f"release (consolidate) candidates: {', '.join(release_candidates)}")
     if expand_candidate:
         notes.append(f"expand candidate: {expand_candidate}")
+    # 2026-11-02: surface the priority ladder, and flag any divergence between
+    # the composite-score pick and the marginal-rate pick rather than hiding it
+    # (contradictory-artifact rule).
+    if ladder_destination:
+        notes.append(f"priority ladder → next capital: {ladder_destination}")
+        if expand_candidate and expand_candidate != ladder_destination:
+            notes.append(
+                f"ladder/score divergence: expand_candidate={expand_candidate} "
+                f"(composite score) vs ladder_destination={ladder_destination} "
+                f"(highest current marginal rate) — the ladder governs the next "
+                f"unit of capital")
+    if ladder_excluded:
+        notes.append("ladder excluded (unmeasured/zero-rate): "
+                     + "; ".join(f"{e['pool']} ({e['reason']})"
+                                 for e in ladder_excluded))
     # 2026-10-02 FIX: only claim "near-optimal" when nothing is pending release.
     # The old condition ignored consolidate verdicts, so the agent could state
     # the portfolio was optimal while simultaneously instructing a release.
@@ -894,10 +1030,22 @@ def decide(held_pools: list, reward_info: dict, fee_evidence: Optional[dict] = N
                 "multiple_to_1e6_fee_threshold")
             for p in held_pools
         } if threshold_analysis else {},
+        ladder=ladder,
+        ladder_destination=ladder_destination,
     )
 
 
-def write_decision(report: DecisionReport, out_dir: str = DECISIONS_DIR) -> str:
+def write_decision(report: DecisionReport, out_dir: str = None) -> str:
+    # 2026-11-02: resolve the default LAZILY, not at def-time. DECISIONS_DIR is a
+    # module-level constant frozen at first import, so if lp_decision was already
+    # imported under the real HOME (earlier tests in the same pytest process do
+    # this), a later HOME redirect has no effect and the dry-run sandbox leaks a
+    # write onto the LIVE decision artifact. Re-expanding here honours whatever
+    # HOME is set when the write actually happens. DECISIONS_DIR is still used by
+    # callers that need the constant at runtime (executor, status) where HOME is
+    # stable; this is the one path that must respect a sandbox.
+    if out_dir is None:
+        out_dir = os.path.expanduser("~/.hermes/lp_tests/decisions")
     os.makedirs(out_dir, exist_ok=True)
     date_str = datetime.now().strftime("%Y%m%d")
     path = os.path.join(out_dir, f"decision-{date_str}.json")

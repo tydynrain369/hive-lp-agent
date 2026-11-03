@@ -72,14 +72,21 @@ class TestBroadcastOnceHelper(unittest.TestCase):
         with mock.patch.object(nectar, "Hive", FakeHive):
             guard.broadcast_once_hive(node=["http://x"], keys={"a": "b"})
         self.assertEqual(captured["num_retries"], 0)
-        self.assertEqual(captured["num_retries_call"], 0)
+        # 2026-11-02: num_retries_call is NOT set to 0. Doing so drops the first
+        # node from nectar's pool (nectarapi/node.py pool init bug), so the
+        # kwargs layer leaves it alone and the wrapper layer bounds the
+        # empty-reply class. The ABSENCE of the key IS the guard.
+        self.assertNotIn("num_retries_call", captured)
         self.assertEqual(captured["node"], ["http://x"])
         self.assertEqual(captured["keys"], {"a": "b"})
 
     def test_refuses_auto_retry_kwargs(self):
-        for bad in ({"num_retries": 5}, {"num_retries_call": 1}):
-            with self.assertRaisesRegex(ValueError, "double-broadcast"):
-                guard.broadcast_once_hive(node=["http://x"], **bad)
+        # num_retries non-zero is refused outright; num_retries_call non-zero is
+        # refused (the wrapper layer owns that budget). Both must raise.
+        with self.assertRaisesRegex(ValueError, "auto-retry"):
+            guard.broadcast_once_hive(node=["http://x"], num_retries=5)
+        with self.assertRaisesRegex(ValueError, "per-call retry"):
+            guard.broadcast_once_hive(node=["http://x"], num_retries_call=1)
 
     def test_is_broadcast_once_true_only_with_both_layers(self):
         rpc = GrapheneRPC("http://127.0.0.1:1/",

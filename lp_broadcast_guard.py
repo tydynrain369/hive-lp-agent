@@ -17,12 +17,13 @@ Empirical send-count matrix (nectar 1.0.7, hermetic probe, 2026-10-22):
 
 Two failure classes, two different mechanics, hence TWO guard layers:
 
-1. KWARGS LAYER — ``num_retries=0`` (and ``num_retries_call=0`` for
-   tidiness). Transport-class failures (timeout, 5xx, connection reset —
-   the ops #222/#223 class) are bounded by the per-NODE budget in
-   nectarapi/node.py sleep_and_check_retries; zeroing it makes the first
-   failure raise NumRetriesReached after exactly one send. Verified
-   end-to-end through the real Hive constructor.
+1. KWARGS LAYER — ``num_retries=0`` only. Transport-class failures
+   (timeout, 5xx, connection reset — the ops #222/#223 class) are bounded
+   by the per-NODE budget in nectarapi/node.py sleep_and_check_retries;
+   zeroing it makes the first failure raise NumRetriesReached after exactly
+   one send. Verified end-to-end through the real Hive constructor.
+   NOT setting ``num_retries_call=0`` because that causes the first node to
+   be dropped from the pool (nectarapi/node.py pool init bug).
 
 2. WRAPPER LAYER — ``bind_send_once(rpc)``. The per-CALL budget
    (num_retries_call) is INERT for the empty-reply class in this nectar
@@ -96,22 +97,32 @@ def broadcast_once_hive(**hive_kwargs):
     """Construct a nectar Hive instance with BROADCAST-ONCE retry semantics.
 
     All normal Hive() arguments (node, keys, nobroadcast, ...) pass through.
-    Applies both guard layers: zero retry budgets (kwargs) and the
-    send-once wrapper (hive.rpc is constructed eagerly by nectar when not
-    offline). Explicit non-zero retry budgets are refused — a broadcast
-    instance with auto-retry re-enabled is the exact defect this module
-    exists to prevent.
+    Applies both guard layers:
+    - kwargs layer: num_retries=0 to bound transport-class failures (timeout,
+      5xx, connection reset — the ops #222/#223 class).
+    - wrapper layer: bind_send_once(rpc) to bound empty-reply re-sends.
+    NOT setting num_retries_call=0 because that causes the first node to be
+    dropped from the pool (nectarapi/node.py pool init bug). The wrapper
+    layer handles the empty-reply class independently.
+    Explicit non-zero retry budgets are refused — a broadcast instance with
+    auto-retry re-enabled is the exact defect this module exists to prevent.
     """
     from nectar import Hive
 
-    for key in ("num_retries", "num_retries_call"):
-        val = hive_kwargs.setdefault(key, 0)
-        if val != 0:
-            raise ValueError(
-                f"broadcast_once_hive: {key}={val!r} would re-enable auto-retry "
-                f"on a broadcast instance — the ops #222/#223 double-broadcast "
-                f"guard requires 0"
-            )
+    # Only num_retries=0; num_retries_call=0 drops the first node from the pool
+    val = hive_kwargs.setdefault("num_retries", 0)
+    if val != 0:
+        raise ValueError(
+            f"broadcast_once_hive: num_retries={val!r} would re-enable auto-retry "
+            f"on a broadcast instance — the ops #222/#223 double-broadcast "
+            f"guard requires 0"
+        )
+    # Explicitly forbid num_retries_call being set non-zero (but don't set it to 0)
+    if "num_retries_call" in hive_kwargs and hive_kwargs["num_retries_call"] != 0:
+        raise ValueError(
+            f"broadcast_once_hive: num_retries_call={hive_kwargs['num_retries_call']!r} "
+            f"would re-enable per-call retry — the wrapper layer handles this"
+        )
     hive = Hive(**hive_kwargs)
     bind_send_once(getattr(hive, "rpc", None))
     return hive
@@ -125,8 +136,10 @@ def is_broadcast_once(hive_instance) -> bool:
         nodes = getattr(rpc, "nodes", None)
         if nodes is None:
             return False
-        budgets_ok = (getattr(nodes, "num_retries", None) == 0
-                     and getattr(nodes, "num_retries_call", None) == 0)
+        # Only num_retries=0 is set in kwargs layer; num_retries_call is NOT set
+        # (setting it to 0 drops the first node from the pool). The wrapper
+        # layer handles the empty-reply class.
+        budgets_ok = getattr(nodes, "num_retries", None) == 0
         # Instance __dict__, NOT getattr: GrapheneRPC.__getattr__ fabricates a
         # truthy RPC-method closure for any unknown attribute name.
         wrapper_ok = _WRAPPER_TAG in getattr(rpc, "__dict__", {})
