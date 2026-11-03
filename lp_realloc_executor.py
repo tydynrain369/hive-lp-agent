@@ -39,6 +39,7 @@ from datetime import datetime
 sys.path.insert(0, "/home/tydynrain/.hermes/scripts")
 
 from lp_executor_test import TestExecutor, MAX_USD_PER_ACTION, LIVE_MODE, _log
+from lp_guardrails import enforce_constraints as _enforce
 
 DECISION_DIR = "/home/tydynrain/.hermes/lp_tests/decisions"
 REALLOC_LOG = "/home/tydynrain/.hermes/lp_tests/reallocations.jsonl"
@@ -52,6 +53,51 @@ DUST_FLOOR_USD = 1e-6
 ROUTE_MAX_HOPS = 5
 
 SOURCE_ACTIONS = ("consolidate", "exit")
+
+
+
+def _build_guard_context(agent, account: str) -> Dict:
+    """Assemble the constraint-enforcement context from the live portfolio.
+
+    The executor already reads balances, positions and staked amounts
+    (agent.portfolio.balances[*].staked). This just reshapes them into the
+    shape enforce_constraints expects, so the gate sees the SAME data the
+    rest of the executor acts on — no separate source, no drift.
+    """
+    balances = getattr(agent.portfolio, "balances", {}) or {}
+    positions = getattr(agent.portfolio, "positions", {}) or {}
+
+    wallet_balances: Dict[str, Dict[str, float]] = {account: {}}
+    staked_balances: Dict[str, Dict[str, float]] = {account: {}}
+    current_lp: Dict[str, Dict[str, float]] = {account: {}}
+
+    for sym, tb in balances.items():
+        bal = getattr(tb, "balance", 0.0) or 0.0
+        staked = getattr(tb, "staked", 0.0) or 0.0
+        # USD — the constraint arithmetic (max_lp_fraction × liquid, min_liquid
+        # floor) is all in USD against amount_usd. Raw token quantity compared
+        # a fraction of 5000 ALIVE against $400 and refused every deposit.
+        px = getattr(tb, "price_usd", None)
+        if px is None:
+            px = getattr(tb, "price", None)
+        wallet_balances[account][sym] = float(bal) * float(px or 0.0)
+        staked_balances[account][sym] = float(staked)
+
+    for pair, pos in positions.items():
+        # LPPosition carries value_usd; that IS current LP exposure
+        val = getattr(pos, "value_usd", 0.0) or 0.0
+        if val:
+            current_lp[account][pair] = float(val)
+
+    portfolio_value = agent.portfolio.total_value() if hasattr(agent.portfolio, "total_value") else 0.0
+
+    return {
+        "current_lp": current_lp,
+        "wallet_balances": wallet_balances,
+        "staked_balances": staked_balances,
+        "global_caps": {},          # populated by lp_constraints when wired
+        "portfolio_value": {account: float(portfolio_value or 0.0)},
+    }
 
 
 def latest_decision():
@@ -611,6 +657,21 @@ def execute(agent, plan, allow_execute=False):
 
     live = LIVE_MODE and allow_execute
     if live:
+        # HARD GATE (2026-11-03): enforce_constraints ran as a no-op until
+        # now. Removals are releases so the accumulation checks skip them,
+        # but the staking-threshold check still applies — un-staking can drop
+        # a global threshold below what LP depends on.
+        _acct = agent.acct["account"] if hasattr(agent, "acct") else "tydynrain"
+        _ctx = _build_guard_context(agent, _acct)
+        _ok, _reason, _ = _enforce(
+            "remove_liquidity", _acct, plan["from_pool"],
+            plan.get("remove_value_usd", 0.0), _ctx)
+        if not _ok:
+            _log({"action": "reallocation_blocked", "status": "guardrail",
+                  "reason": _reason, "plan": plan})
+            return [{"plan": plan, "removal": None,
+                     "status": "blocked", "reason": _reason,
+                     "timestamp": datetime.now().isoformat(timespec="seconds")}]
         entry = TestExecutor(agent).remove_liquidity(
             plan["from_pool"],
             plan["shares_total"] * (plan["remove_pct_of_position"] / 100.0),
@@ -920,6 +981,22 @@ def execute_idle_deploy(agent, plan, allow_execute):
     quote = plan["sizing"]["quote_token"]
     dst = plan.get("pool")
     IN = "SWAP.HIVE"
+
+    # --- HARD GATE (2026-11-03): the deposit is an accumulation, so the
+    # full constraint set applies — staking thresholds, per-account caps,
+    # cross-account global caps, and the risk budget. This runs BEFORE
+    # any swap or add_liquidity, on the sized amount, so a refused plan
+    # never touches the chain.
+    _acct = ACCT
+    _ctx = _build_guard_context(agent, _acct)
+    _dst_pair = dst or f"{base}:{quote}"
+    _ok, _reason, _ = _enforce(
+        "add_liquidity", _acct, _dst_pair,
+        plan.get("budget_usd", 0.0), _ctx)
+    if not _ok:
+        plan["executed"] = False
+        plan["reason"] = f"guardrail blocked: {_reason}"
+        return plan
 
     # --- PRE-STATE: independent reads, the arbitration baseline ---
     pre_hive = _bal(IN)
