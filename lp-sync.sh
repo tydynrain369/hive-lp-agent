@@ -65,13 +65,26 @@ while IFS= read -r -d '' f; do
 done < <(git ls-files -z -- '*.py' '*.sh' 'tests/*.py')
 # live-only tracked-namespace files: any .py/.sh in live (not under archive/
 # agentos/, not tests_canonical/, not __pycache__) that is NOT tracked by git.
-# Nothing is allowlisted — the reconcile (2026-11-03) tracked every live-critical
-# file, so any straggler is a real drift, not a legitimate exception.
+# Scope is the LP agent's own files: other lanes (hermes-mega-sync.sh = MEGA DR,
+# qortal_listing_watch.sh = Qortal marketplace monitor) live in the same scripts
+# dir on purpose and are not part of this tree, so they are excluded by prefix.
+# Nothing else is allowlisted — the reconcile (2026-11-03) tracked every
+# live-critical LP file, so any straggler is a real drift.
+LP_PREFIXES="lp_ waat- run_lp_agent hive_lp_agent liquidity_agent supervised_live_tick"
 while IFS= read -r f; do
   case "$f" in
     */tests_canonical/*|*/archive/*|*/agentos/*|*/__pycache__/*) continue ;;
   esac
   rel="${f#$LIVE/}"
+  base="${rel##*/}"
+  # is this an LP-agent file?
+  is_lp=0
+  for pre in $LP_PREFIXES; do
+    case "$base" in
+      "$pre"*) is_lp=1; break ;;
+    esac
+  done
+  [ "$is_lp" -eq 0 ] && continue
   if git -C "$REPO" ls-files --error-unmatch "$rel" >/dev/null 2>&1; then
     continue
   fi
