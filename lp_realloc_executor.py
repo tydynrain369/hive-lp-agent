@@ -694,9 +694,15 @@ def execute(agent, plan, allow_execute=False):
         }
         _log(entry)
 
+    # `deposit_sizing` is the key plan_reallocation() actually emits (LEG B
+    # sizing, 2026-10-04). An earlier rename left these readers pointing at a
+    # `deposit_plan` key that is never produced, so execute() crashed with
+    # KeyError AFTER broadcasting the removal — a live capital move with no
+    # ledger record (2026-11-03 09:00 tick). Use .get(): the deposit leg is
+    # deliberately not implemented, so a plan without sizing must still record.
     out = {"plan": plan, "removal": entry,
            "deposit": {"status": "not-implemented",
-                       "detail": plan["deposit_plan"]},
+                       "detail": plan.get("deposit_sizing")},
            "timestamp": datetime.now().isoformat(timespec="seconds")}
     with open(REALLOC_LOG, "a") as fh:
         fh.write(json.dumps(out, default=str) + "\n")
@@ -754,11 +760,11 @@ def main():
     print(f"  live mode: {LIVE_MODE}   execute flag: {allow_execute}")
     print()
     for k, v in plan.items():
-        if k == "deposit_plan":
+        if k == "deposit_sizing":
             continue
         print(f"  {k:<28}: {v}")
     print()
-    print(f"  deposit: {plan.get('deposit_plan')}")
+    print(f"  deposit: {plan.get('deposit_sizing')}")
     print()
 
     if plan.get("action") != "remove_and_stage":

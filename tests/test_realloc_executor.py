@@ -8,8 +8,11 @@ Run:
       /home/tydynrain/.hermes/scripts/tests/test_realloc_executor.py
 """
 import json
+import os
 import sys
+import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, "/home/tydynrain/.hermes/scripts")
 import lp_realloc_executor as X
@@ -503,3 +506,49 @@ class TestRouteCostGate(unittest.TestCase):
         # no position => nothing released => nothing priced, not NaN or garbage
         for v in out.values():
             self.assertEqual(float(v), 0.0)
+
+
+class TestExecuteCompletes(unittest.TestCase):
+    """execute() must COMPLETE on a plan that plan_reallocation() produced.
+
+    Regression pin (2026-11-03). The plan builder emitted `deposit_sizing`,
+    while execute() read `plan["deposit_plan"]`. On the live 09:00 tick the
+    removal leg BROADCAST on-chain and execute() then died with
+    KeyError: 'deposit_plan' — before writing the reallocation ledger. A real
+    capital move with no record. A bare rename had broken the ONLY exit
+    primitive the autonomous agent has, and nothing pinned the two halves
+    together: every existing test stopped at plan_reallocation().
+    """
+
+    def _plan(self):
+        d = decision(frm="SRC:POOL", to="DST:POOL", action="consolidate")
+        agent = FakeExecutor(shares=10.0, value=0.01,
+                             pe=FakePE(["SRC:POOL", "SRC:HUB", "HUB:DST", "DST:POOL"]))
+        p = plan_with(agent, d)
+        self.assertEqual(p["action"], "remove_and_stage")
+        return agent, p
+
+    def _run(self, agent, p):
+        """execute() with the real ledger and execution log neutralised."""
+        with tempfile.TemporaryDirectory() as td, \
+                patch.object(X, "_log"), \
+                patch.object(X, "REALLOC_LOG", os.path.join(td, "realloc.jsonl")):
+            return X.execute(agent, p, allow_execute=False)
+
+    def test_dry_run_returns_a_complete_record(self):
+        agent, p = self._plan()
+        out = self._run(agent, p)
+        self.assertEqual(len(out), 1)
+        rec = out[0]
+        for key in ("plan", "removal", "deposit", "timestamp"):
+            self.assertIn(key, rec)
+        self.assertEqual(rec["removal"]["status"], "dry-run")
+        # the deposit placeholder must carry the REAL sizing object, not None
+        self.assertEqual(rec["deposit"]["detail"], p["deposit_sizing"])
+
+    def test_the_key_the_builder_emits_is_the_key_execute_reads(self):
+        """The exact shape that crashed the 2026-11-03 09:00 live tick."""
+        agent, p = self._plan()
+        self.assertIn("deposit_sizing", p)
+        self.assertNotIn("deposit_plan", p)     # the builder never emits this
+        self._run(agent, p)                     # must not raise KeyError
