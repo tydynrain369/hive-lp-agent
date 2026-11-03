@@ -50,4 +50,38 @@ else
   echo "=== AUTONOMY: OFF (dry-run; touch $AUTONOMY_FLAG to engage) ==="
 fi
 
-exec "$PROJECT_VENV/bin/python3" "$LP_SCRIPT" "$@"
+# ---------------------------------------------------------------------
+# BOUNDED OUTPUT CAPTURE (2026-11-03)
+# ---------------------------------------------------------------------
+# A stray debug print dumped the entire assessment report as ONE 1.38 MB
+# line into this job's stdout, hourly for eight hours. Hermes captures a
+# no_agent script's stdout verbatim into ~/.hermes/cron/output/<id>/*.md,
+# so that became 10.6 MB of single-line blobs. Reading those then blew the
+# agent's context past the 65,536-token compression threshold and livelocked
+# compression (repeated "made insufficient progress: N -> N; skipping").
+#
+# We must NOT pipe the live run through `head -c`: SIGPIPE would kill a
+# process that may be mid-broadcast. So the run completes untouched into a
+# temp file; only the REPORTING is bounded.
+LP_OUTPUT_MAX_BYTES="${LP_OUTPUT_MAX_BYTES:-262144}"   # 256 KiB per run
+
+_tmp="$(mktemp "${TMPDIR:-/tmp}/lp-cron-out.XXXXXX")"
+trap 'rm -f "$_tmp"' EXIT
+
+set +e
+"$PROJECT_VENV/bin/python3" "$LP_SCRIPT" "$@" >"$_tmp" 2>&1
+rc=$?
+set -e
+
+_size="$(wc -c <"$_tmp")"
+if [ "$_size" -gt "$LP_OUTPUT_MAX_BYTES" ]; then
+  echo "=== OUTPUT TRUNCATED: run emitted ${_size} bytes; showing first ${LP_OUTPUT_MAX_BYTES} + final 4096 ==="
+  head -c "$LP_OUTPUT_MAX_BYTES" "$_tmp"
+  printf '\n=== ...output tail... ===\n'
+  tail -c 4096 "$_tmp"
+  printf '\n=== TRUNCATION NOTE: something printed an oversized blob. Find and bound it at the source (an unbounded print of a dict/report/response). ===\n'
+else
+  cat "$_tmp"
+fi
+
+exit "$rc"
