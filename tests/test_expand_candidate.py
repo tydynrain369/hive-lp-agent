@@ -1,10 +1,13 @@
 """Regression tests for the LP decision engine.
 
-RESTORED 2026-10-02 (second deletion). This file has now been removed twice from
-tests/ while sibling test files survived, so a durable copy lives at
-scripts/tests_canonical/test_expand_candidate.py and is copied in by
-scripts/tests/restore_tests.sh. If it vanishes again, restore from there and
-treat the deletion as a live bug to chase, not housekeeping.
+RESTORED 2026-10-02 (second deletion). This file has been removed from tests/
+more than once while sibling test files survived. tests/restore_tests.sh heals
+it from the git repo at ~/hive-agent-test — the versioned mirror, which sits
+outside the execute_code kernel's working directory. (The old
+scripts/tests_canonical/ copy was retired 2026-11-03: it duplicated tests/
+byte-for-byte and broke a bare `pytest` run with an import mismatch.) If this
+vanishes again, run restore_tests.sh and treat the deletion as a live bug to
+chase, not housekeeping.
 
 Run:
   /home/tydynrain/hive-agent-test/.venv/bin/python -m unittest discover \

@@ -145,7 +145,7 @@ def discover_rewards(pe, portfolio):
             'batch_id': str(b.get('_id', '')),
             'batch_ticks_left': _ticks_left,
         } for t in tokens])
-    print(f"  DEBUG: distribution contract returned {len(dist)} pools")
+    print(f"  Reward landscape: distribution contract returned {len(dist)} pools")
     # --- Secondary: Mining contract (lottery rewards) ---
     mining = he('find', {'contract': 'mining', 'table': 'pools', 'query': {}})
     for m in mining:
@@ -180,7 +180,7 @@ def discover_rewards(pe, portfolio):
                 'lottery_amount': lottery_amount,
                 'type': 'mining'
             }])
-    print(f"  DEBUG: total reward_discovery entries: {len(reward_discovery)} pools")
+    print(f"  Reward landscape: {len(reward_discovery)} pools with reward discovery")
     # 2026-10-22: the broad try/except that used to wrap this body SWALLOWED
     # RPC failures into a silently empty landscape — a failed probe is not
     # evidence of absence (pinned: test_rpc_failure_not_empty_landscape).
@@ -478,6 +478,43 @@ def manage_positions(agent, reward_discovery):
         print(f"  Position assessment failed — staying observe: {e}")
         return []
     agent.position_assessment = report
+    # --- EVIDENCE PIPELINE (2026-11-03): lp_evidence was dormant.
+    # assess_positions already produces {'comparisons': [...]} in exactly the
+    # shape lp_evidence.candidates_from_assessment consumes. joint_allocation
+    # runs the shared-wallet subset selection over those comparisons and
+    # returns per-pool economic evidence, which the candidate screen
+    # validates against its own deposit quotes (identity, freshness, gaps).
+    # Without this the screen runs with economic_evidence=None and every
+    # candidate carries missing_evidence=['common reward-schedule horizon',
+    # 'candidate reward entitlement', 'fee/risk bounds', ...] — the selector
+    # has nothing to select on.
+    economic_evidence = None
+    try:
+        import lp_evidence
+        _ea = lp_evidence.joint_allocation(
+            report,
+            {s: str(b.balance) for s, b in agent.portfolio.balances.items()},
+            captured_at_ms=report.get('captured_at_ms') or int(_t.time() * 1000),
+            now_ms=int(_t.time() * 1000),
+            max_staleness_ms=7 * 86400 * 1000)
+        # choose_joint returns {'selected': [pool_ids...], 'assessments': [...]}.
+        # 'selected' is a list of pool-id STRINGS; the per-pool evidence dicts
+        # live in 'assessments', where decision == 'candidate'. Iterating the
+        # selection dict directly yields its keys and crashes on _c['pool'].
+        economic_evidence = {}
+        for _a in (_ea.get('selection', {}).get('assessments') or []):
+            if _a.get('decision') == 'candidate':
+                _pool = _a.get('id')
+                if _pool:
+                    economic_evidence[_pool] = _a
+        print(f"  Evidence: {len(economic_evidence)} pools with joint "
+              f"allocation evidence ({len(_ea.get('rejected') or [])} rejected)")
+    except Exception as e:
+        # Non-fatal: the screen degrades to evidence-less screening, never
+        # the tick dies (2026-10-22: the first live run crashed the whole
+        # main through exactly this path).
+        print(f"  Evidence pipeline unavailable (non-fatal): "
+              f"{type(e).__name__}: {e}")
     try:
         raw_pools = he('find', {'contract': 'marketpools',
                                 'table': 'pools', 'query': {},
@@ -488,12 +525,20 @@ def manage_positions(agent, reward_discovery):
     except Exception as e:
         print(f"  Candidate screen inputs unavailable: {e}")
         return []
+    # Only pass economic_evidence when the pipeline actually produced
+    # something — a None here is still a kwarg, and the screen's evidence
+    # validation would then see None for every candidate. Conditional on
+    # the value, not the presence of the key.
+    _screen_kwargs = dict(rows=rows, raw_pools=raw_pools,
+                          precisions=agent.pe.token_precisions,
+                          balances=agent.portfolio.balances,
+                          positions=agent.portfolio.positions,
+                          at_ms=int(_t.time() * 1000),
+                          code_hash=code_hash)
+    if economic_evidence:
+        _screen_kwargs['economic_evidence'] = economic_evidence
     try:
-        out = lp_candidate_screen.screen(rows, raw_pools,
-                                         agent.pe.token_precisions,
-                                         agent.portfolio.balances,
-                                         agent.portfolio.positions,
-                                         int(_t.time() * 1000), code_hash)
+        out = lp_candidate_screen.screen(**_screen_kwargs)
     except Exception as e:
         # The screen is an ASSESSMENT layer — a failure here must degrade to
         # 'no selection', never kill the tick (2026-10-22: the first live run

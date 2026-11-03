@@ -1,125 +1,141 @@
 #!/usr/bin/env bash
-# lp-sync.sh — enforce that the live working tree and the git repo are ONE tree.
+# lp-sync.sh — keep the live runtime tree and the git repo as ONE tree.
 #
-# ROOT CAUSE of the 2026-11-03 divergence: ~/.hermes/scripts (live) is NOT a
-# git checkout of ~/hive-agent-test. Every commit pushed a chosen subset, so
-# the two trees drifted — 20 live-only tests + 10 live-only modules never reached
-# the repo, 16 repo-only tests never reached live. Nothing enforced sameness.
+# MODEL (settled 2026-11-03)
+# -------------------------
+#   LIVE  ~/.hermes/scripts     runtime source of truth.
+#                               run_lp_agent.sh pins LP_SCRIPT to
+#                               live/cron_lp_agent.py, and Python resolves the
+#                               lp_* imports from that script's own directory.
+#                               Whatever LIVE holds is what actually runs.
+#   REPO  ~/hive-agent-test     versioned mirror (git), a symlink target under
+#                               /mnt/Arch-Linux-Share/AgentOS/repos/. It also
+#                               supplies the venv the cron activates.
 #
-# This script is the enforcer. Run it after ANY change to the LP agent:
-#   lp-sync.sh            # bidirectional sync + verify, no commit
-#   lp-sync.sh --commit  # sync, then commit + push
+# DIRECTION IS LIVE -> REPO. The previous revision of this script called the
+# repo canonical and copied repo -> live over every tracked file. On 2026-11-03
+# that silently CLOBBERED an unreleased live runtime fix: the joint-allocation
+# evidence handoff existed only in live, while the repo still held the
+# regression that disabled it. A runtime tree must never be overwritten by its
+# own mirror, so the enforcer now promotes and then verifies.
 #
-# Rules:
-#   - repo is canonical (it is the cron venv source, mount-linked at
-#     /mnt/Arch-Linux-Share/AgentOS/repos/hive-agent-test).
-#   - live (~/.hermes/scripts) is a synced mirror.
-#   - sync is bidirectional: repo -> live always; live -> repo for files that
-#     pass the gate (see GATE_* below).
-#   - exit non-zero on drift so a cron can catch it.
-set -euo pipefail
+# WHAT IS "THE LP TREE"
+#   live  : top-level *.py/*.sh/*.ini whose name matches the LP namespace, plus
+#           tests/*.py and tests/*.sh, plus pytest.ini.
+#   repo  : the same set; the repo additionally (and legitimately) holds
+#           README.md, references/, reports/, bin/, archive/, .gitignore and the
+#           waat-collect source script. Those are repo-only and never expected
+#           in live.
+#   other lanes sharing ~/.hermes/scripts (hermes-mega-sync.sh = MEGA DR,
+#   qortal_listing_watch.sh = Qortal monitor) are NOT part of this tree and are
+#   excluded by name.
+#
+# USAGE
+#   lp-sync.sh            promote live -> repo, verify, run the suite
+#   lp-sync.sh --check    verify only; no copy and no suite (fast drift alarm)
+#   lp-sync.sh --commit   promote + verify + suite, then commit + push
+#
+# EXIT  0 ok | 1 drift detected | 2 suite failed | 64 usage
+set -uo pipefail
 
 REPO="${HOME}/hive-agent-test"
 LIVE="${HOME}/.hermes/scripts"
 VENV="${REPO}/.venv/bin/python"
+
+MODE=run
 COMMIT=0
-if [ "${1:-}" = "--commit" ]; then COMMIT=1; fi
+case "${1:-}" in
+  "")        ;;
+  --check)   MODE=check ;;
+  --commit)  COMMIT=1 ;;
+  *) echo "usage: lp-sync.sh [--check|--commit]" >&2; exit 64 ;;
+esac
 
-# --- gate: what may travel live -> repo -------------------------------
-# Tests must actually pass. Ad-hoc scripts (probes, dryruns that hit live RPC)
-# are quarantined, never promoted.
-PASSING_TESTS="test_age_bonus test_both_tokens_lifecycle test_expand_candidate \
-  test_lp_dividends test_lp_lifecycle test_lp_route_cost test_lp_router \
-  test_lp_sizing test_multi_batch test_operator_token_lists \
-  test_realisable_dividend test_realloc_executor test_scale_properties"
+[ -d "$REPO/.git" ] || { echo "lp-sync: no git repo at $REPO" >&2; exit 64; }
+[ -d "$LIVE" ]      || { echo "lp-sync: no live tree at $LIVE" >&2; exit 64; }
 
-# --- 1. repo -> live: everything tracked --------------------------------
-cd "$REPO"
-git ls-files -z -- '*.py' '*.sh' | while IFS= read -r -d '' f; do
-  mkdir -p "$LIVE/$(dirname "$f")"
-  cp -f "$REPO/$f" "$LIVE/$f"
-done
-# tests live under tests/ in both
-git ls-files -z -- 'tests/*.py' | while IFS= read -r -d '' f; do
-  mkdir -p "$LIVE/$(dirname "$f")"
-  cp -f "$REPO/$f" "$LIVE/$f"
-done
-
-# --- 2. live -> repo: gated promotion ----------------------------------
-for t in $PASSING_TESTS; do
-  if [ -f "$LIVE/tests/$t.py" ]; then
-    cp -f "$LIVE/tests/$t.py" "$REPO/tests/$t.py"
-  fi
-done
-
-# --- 3. verify: every tracked file identical in both trees --------------
-drift=0
-while IFS= read -r -d '' f; do
-  if [ ! -f "$LIVE/$f" ]; then
-    echo "DRIFT (missing from live): $f" >&2
-    drift=1
-  elif ! cmp -s "$REPO/$f" "$LIVE/$f"; then
-    echo "DRIFT (live != repo): $f" >&2
-    drift=1
-  fi
-done < <(git ls-files -z -- '*.py' '*.sh' 'tests/*.py')
-# live-only tracked-namespace files: any .py/.sh in live (not under archive/
-# agentos/, not tests_canonical/, not __pycache__) that is NOT tracked by git.
-# Scope is the LP agent's own files: other lanes (hermes-mega-sync.sh = MEGA DR,
-# qortal_listing_watch.sh = Qortal marketplace monitor) live in the same scripts
-# dir on purpose and are not part of this tree, so they are excluded by prefix.
-# Nothing else is allowlisted — the reconcile (2026-11-03) tracked every
-# live-critical LP file, so any straggler is a real drift.
-LP_PREFIXES="lp_ waat- run_lp_agent hive_lp_agent liquidity_agent supervised_live_tick"
-while IFS= read -r f; do
-  case "$f" in
-    */tests_canonical/*|*/archive/*|*/agentos/*|*/__pycache__/*) continue ;;
+# --- the LP namespace ---------------------------------------------------
+is_lp_base() {
+  case "$1" in
+    lp_*|lp-*|waat-*|cron_lp_agent*|hive_lp_agent*|hive_lp_dashboard*|\
+liquidity_agent_v2*|run_lp_agent*|run_live_once*|supervised_live_tick*) return 0 ;;
+    *) return 1 ;;
   esac
-  rel="${f#$LIVE/}"
-  base="${rel##*/}"
-  # is this an LP-agent file?
-  is_lp=0
-  for pre in $LP_PREFIXES; do
-    case "$base" in
-      "$pre"*) is_lp=1; break ;;
-    esac
-  done
-  [ "$is_lp" -eq 0 ] && continue
-  if git -C "$REPO" ls-files --error-unmatch "$rel" >/dev/null 2>&1; then
-    continue
+}
+
+# --- 1. build the promote list from LIVE --------------------------------
+promote=()
+while IFS= read -r f; do
+  base="${f##*/}"
+  is_lp_base "$base" && promote+=("${f#"$LIVE"/}")
+done < <(find "$LIVE" -maxdepth 1 -type f \( -name '*.py' -o -name '*.sh' \) 2>/dev/null | sort)
+
+while IFS= read -r f; do
+  promote+=("${f#"$LIVE"/}")
+done < <(find "$LIVE/tests" -maxdepth 1 -type f \( -name '*.py' -o -name '*.sh' \) 2>/dev/null | sort)
+
+[ -f "$LIVE/pytest.ini" ] && promote+=("pytest.ini")
+
+# --- 2. promote live -> repo --------------------------------------------
+changed=0
+for rel in "${promote[@]}"; do
+  src="$LIVE/$rel"; dst="$REPO/$rel"
+  mkdir -p "$(dirname "$dst")"
+  if [ ! -f "$dst" ] || ! cmp -s "$src" "$dst"; then
+    if [ "$MODE" = run ]; then
+      cp -f "$src" "$dst" && { echo "promoted: $rel"; changed=1; }
+    fi
   fi
-  echo "DRIFT (live-only, not in repo): $rel" >&2
-  drift=1
-done < <(find "$LIVE" -maxdepth 2 \( -name '*.py' -o -name '*.sh' \) -not -path '*/tests/*' \
-  -not -path '*/tests_canonical/*' -not -path '*/archive/*' \
-  -not -path '*/agentos/*' -not -path '*/__pycache__/*' -print 2>/dev/null)
+done
+[ "$MODE" = run ] && [ "$changed" -eq 0 ] && echo "lp-sync: nothing to promote"
+
+# --- 3a. verify: every promoted file is identical in the repo -----------
+drift=0
+for rel in "${promote[@]}"; do
+  src="$LIVE/$rel"; dst="$REPO/$rel"
+  if [ ! -f "$dst" ]; then
+    echo "DRIFT (missing from repo): $rel" >&2; drift=1
+  elif ! cmp -s "$src" "$dst"; then
+    echo "DRIFT (live != repo): $rel" >&2; drift=1
+  fi
+done
+
+# --- 3b. verify: no tracked test has been reaped out of LIVE ------------
+while IFS= read -r -d '' rel; do
+  if [ ! -f "$LIVE/$rel" ]; then
+    echo "DRIFT (tracked test missing from live): $rel" >&2
+    echo "       -> run tests/restore_tests.sh to heal it" >&2
+    drift=1
+  fi
+done < <(cd "$REPO" && git ls-files -z -- 'tests/*.py')
 
 if [ "$drift" -ne 0 ]; then
   echo "lp-sync: DRIFT DETECTED" >&2
   exit 1
 fi
-echo "lp-sync: trees identical ($(git ls-files | wc -l) tracked files)"
+echo "lp-sync: trees identical ($(cd "$REPO" && git ls-files | wc -l) tracked files in repo)"
 
-# --- 4. run the suite in the canonical repo -----------------------------
+[ "$MODE" = check ] && exit 0
+
+# --- 4. run the suite against the repo (the promoted mirror) ------------
 echo "lp-sync: running suite..."
-"$VENV" -m pytest tests/ -q --tb=line -p no:randomly >/tmp/lp-sync-pytest.log 2>&1 || {
+if ! (cd "$REPO" && "$VENV" -m pytest -q -p no:cacheprovider) >/tmp/lp-sync-pytest.log 2>&1; then
   echo "lp-sync: SUITE FAILED" >&2
   tail -20 /tmp/lp-sync-pytest.log >&2
   exit 2
-}
+fi
 passed=$(grep -oE '[0-9]+ passed' /tmp/lp-sync-pytest.log | tail -1)
-echo "lp-sync: $passed"
+echo "lp-sync: ${passed:-suite ok}"
 
-# --- 5. optional commit + push -----------------------------------------
+# --- 5. optional commit + push ------------------------------------------
 if [ "$COMMIT" -eq 1 ]; then
   cd "$REPO"
   if git diff --quiet && git diff --cached --quiet; then
     echo "lp-sync: nothing to commit"
   else
     git add -A
-    git commit -m "lp-sync: reconcile live/repo trees ($passed)"
-    git push origin main
-    echo "lp-sync: committed + pushed"
+    git commit -q -m "lp-sync: promote live runtime tree -> repo (${passed:-suite ok})"
+    git push -q origin main && echo "lp-sync: committed + pushed"
   fi
 fi
 exit 0

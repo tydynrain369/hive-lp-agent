@@ -63,22 +63,80 @@ class AssessmentTests(unittest.TestCase):
         self.assertEqual(decide.call_args.args[0]['participants'], self.data['participants'])
         self.assertTrue(any(p.get('offset', 0) >= 1000 for _, p in self.calls))
 
-    def test_cron_reports_without_feeding_conditional_evidence_to_selector(self):
+    def test_cron_wires_joint_allocation_evidence_into_the_selector(self):
+        """2026-11-03: the evidence pipeline was dormant. assess_positions
+        already produces {'comparisons': [...]} in exactly the shape
+        lp_evidence.joint_allocation consumes; the cron was calling screen()
+        with economic_evidence=None, so every candidate carried
+        missing_evidence=[...] and the selector had nothing to select on.
+        This asserts the handoff is live: a qualifying comparison produces
+        economic_evidence and screen() receives it.
+        """
         agent = SimpleNamespace(pe=SimpleNamespace(token_precisions={}),
-                                portfolio=SimpleNamespace(account='hermes-sandbox', balances={}, positions={}))
-        report = {'comparisons': [{'pool':'A:B', 'decision':'observe', 'conditional_advantage':'1'}], 'transactions_submitted':0}
+                                portfolio=SimpleNamespace(account='hermes-sandbox',
+                                    balances={'A': SimpleNamespace(balance='100'),
+                                              'B': SimpleNamespace(balance='100')},
+                                    positions={}))
+        # A comparison that passes lp_evidence.promote's gates:
+        # liquidation_complete + coverage_complete + explicit economic_evidence
+        # dict with all required flags + valid horizon + non-degenerate deposit.
+        _cmp = {
+            'pool': 'A:B', 'decision': 'observe',
+            'liquidation_complete': True, 'coverage_complete': True,
+            'terminal_unit': 'B', 'horizon_start_ms': 1000, 'horizon_end_ms': 2000,
+            'deposit': {'shares_added': '100', 'amounts': {'A': '10', 'B': '10'}},
+            'affected_pools': ['A:B'],
+            'move': {'terminal': '100'}, 'stay': {'terminal': '100'},
+            'economic_evidence': {
+                'mechanics_verified': True, 'quotes_fresh': True,
+                'coverage_complete': True, 'pool': 'A:B', 'terminal_unit': 'B',
+                'horizon_start_ms': 1000, 'horizon_end_ms': 2000,
+                'move_earnings_lower': '100', 'stay_earnings_upper': '50',
+                'switching_cost_upper': '0', 'deposit': {'shares_added': '100',
+                                                          'amounts': {'A': '10', 'B': '10'}},
+                'affected_pools': ['A:B'], 'captured_at_ms': 1000,
+            },
+        }
+        report = {'comparisons': [_cmp], 'transactions_submitted': 0,
+                  'captured_at_ms': 1000}
         with patch('lp_pool_assessment.assess_pools', return_value=[]), \
              patch('lp_candidate_screen.screen', return_value={'selection':[]}) as screen, \
              patch.object(cron, 'he', return_value={'codeHash':'fixture'}) as rpc, \
-             patch('lp_position_assessment.assess_positions', return_value=report) as assess:
+             patch('lp_position_assessment.assess_positions', return_value=report) as assess, \
+             patch('time.time', return_value=1000.0):
             self.assertEqual(cron.manage_positions(agent, {}), [])
         assess.assert_called_once_with(rpc, 'hermes-sandbox')
         self.assertIs(agent.position_assessment, report)
+        self.assertIn('economic_evidence', screen.call_args.kwargs)
+        self.assertIn('A:B', screen.call_args.kwargs['economic_evidence'])
+
+    def test_cron_degrades_cleanly_when_evidence_pipeline_unavailable(self):
+        """The evidence pipeline is non-fatal: if joint_allocation raises,
+        screen() is still called WITHOUT economic_evidence, and the tick
+        still returns a (possibly empty) selection. A failure here must
+        never kill the whole main (2026-10-22: the first live run crashed
+        the entire tick through exactly this path).
+        """
+        agent = SimpleNamespace(pe=SimpleNamespace(token_precisions={}),
+                                portfolio=SimpleNamespace(account='hermes-sandbox',
+                                    balances={'A': SimpleNamespace(balance='100'),
+                                              'B': SimpleNamespace(balance='100')},
+                                    positions={}))
+        report = {'comparisons': [], 'transactions_submitted': 0}
+        with patch('lp_pool_assessment.assess_pools', return_value=[]), \
+             patch('lp_candidate_screen.screen', return_value={'selection':[]}) as screen, \
+             patch.object(cron, 'he', return_value={'codeHash':'fixture'}) as rpc, \
+             patch('lp_position_assessment.assess_positions', return_value=report), \
+             patch('lp_evidence.joint_allocation', side_effect=TypeError('boom')):
+            self.assertEqual(cron.manage_positions(agent, {}), [])
         self.assertNotIn('economic_evidence', screen.call_args.kwargs)
 
     def test_cron_assessment_failure_stays_observe(self):
         agent = SimpleNamespace(pe=SimpleNamespace(token_precisions={}),
-                                portfolio=SimpleNamespace(account='hermes-sandbox', balances={}, positions={}))
+                                portfolio=SimpleNamespace(account='hermes-sandbox',
+                                    balances={'A': SimpleNamespace(balance='100'),
+                                              'B': SimpleNamespace(balance='100')},
+                                    positions={}))
         with patch('lp_pool_assessment.assess_pools', return_value=[]), \
              patch('lp_candidate_screen.screen', return_value={'selection':[]}), \
              patch.object(cron, 'he', return_value={'codeHash':'fixture'}), \
