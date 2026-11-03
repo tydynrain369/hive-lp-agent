@@ -19,10 +19,28 @@
 #   Publishing to the remote stays a reviewed act. When you want origin updated,
 #   run:  ~/.hermes/scripts/lp-sync.sh --commit
 #
+# WATCHDOG SEMANTICS
+#   Silent on success (empty stdout -> nothing delivered). On drift or suite
+#   failure it prints a short tail of the log, so the cron alert carries the
+#   reason. The full transcript always lands in the log beside AUTONOMY_ON.
+#
 # EXIT  0 coherent | 1 drift detected | 2 suite failed
-#   Non-zero surfaces as a cron failure notification. That IS the alarm.
 set -uo pipefail
 LIVE="$HOME/.hermes/scripts"
+LOG="$HOME/.hermes/lp_tests/drift-guard.log"
+mkdir -p "$(dirname "$LOG")"
 
-bash "$LIVE/tests/restore_tests.sh" || true
-exec bash "$LIVE/lp-sync.sh" --local
+{
+  echo "=== lp-drift-guard $(date -Is) ==="
+  bash "$LIVE/tests/restore_tests.sh"
+  bash "$LIVE/lp-sync.sh" --local
+} >"$LOG" 2>&1
+rc=$?
+
+if [ "$rc" -ne 0 ]; then
+  echo "LP tree coherence guard FAILED (rc=$rc)"
+  echo "live ~/.hermes/scripts  vs  repo ~/hive-agent-test"
+  echo "--- last 25 lines of $LOG ---"
+  tail -25 "$LOG"
+fi
+exit "$rc"
