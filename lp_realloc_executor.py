@@ -40,6 +40,7 @@ sys.path.insert(0, "/home/tydynrain/.hermes/scripts")
 
 from lp_executor_test import TestExecutor, MAX_USD_PER_ACTION, LIVE_MODE, _log
 from lp_guardrails import enforce_constraints as _enforce
+from typing import Dict
 
 DECISION_DIR = "/home/tydynrain/.hermes/lp_tests/decisions"
 REALLOC_LOG = "/home/tydynrain/.hermes/lp_tests/reallocations.jsonl"
