@@ -1065,6 +1065,9 @@ class ReallocationPlanner:
         
         print(f"  → Adding LP: {base_deploy:.6f} {pool.base} + {quote_deploy:.6f} {pool.quote} ({pool.pool_id})")
         
+        armed, why = live_armed()
+        if not armed:
+            raise LiveNotArmed(f"deploy {pool.pool_id} refused: live not armed ({why})")
         from nectarengine.pool import LiquidityPool
         from lp_broadcast_guard import broadcast_once_hive
         acct = json.load(open(VAULT_PATH))
@@ -1072,22 +1075,89 @@ class ReallocationPlanner:
         hive = broadcast_once_hive(node=[HIVE_RPC], keys={acct["account"]: acct["active"]})
         lp = LiquidityPool(blockchain_instance=hive)
         result = lp.add_liquidity(acct["account"], f"{pool.base}:{pool.quote}", base_deploy, quote_deploy, max_deviation=1)
+        _ledger_write("deploy_add_liquidity", result,
+                      {"pool": f"{pool.base}:{pool.quote}", "base_amt": base_deploy,
+                       "quote_amt": quote_deploy})
         if result:
             print(f"    ✓ Deployed")
         else:
             print(f"    ✗ Failed")
+
+def _ledger_write(action: str, tx_result, detail: dict) -> None:
+    """Self-ledgering for the module-level deploy path (see lp_chain_audit.py)."""
+    rec = {"logged_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "action": action,
+           "live": True, "pipeline": "liquidity_agent_v2",
+           "detail": detail, "tx_result": tx_result}
+    try:
+        import lp_executor_test as _le
+        _le._log(rec)                       # canonical writer (owns the path)
+    except Exception as e:                  # never mask a trade — but be loud
+        print(f"    !! LEDGER WRITE FAILED ({e}): {json.dumps(rec)[:400]}")
+
+
+# ─── Live gate ──────────────────────────────────────────────────────
+class LiveNotArmed(RuntimeError):
+    """Raised instead of signing: live broadcasting was never armed."""
+
+
+def live_armed() -> tuple:
+    """Is live broadcasting armed? -> (bool, why-not)
+
+    Signing requires BOTH, deliberately:
+      1. LP_TEST_LIVE == "1" in the environment (exported by run_lp_agent.sh
+         only when the AUTONOMY_ON flag exists), and
+      2. ~/.hermes/lp_tests/AUTONOMY_ON present on disk.
+
+    2026-11-03 root cause: a bare `pytest -q` from the tree root collected
+    archive/test_cycle.py — a file named test_*.py with unguarded module-level
+    code whose run_cycle() executed ON IMPORT and broadcast real market buys
+    and add_liquidity calls. The ledger never saw them because the executions
+    log is HOME-expanded and test runs sandbox HOME. The key was never meant
+    to be reachable from a test process, so this chokepoint refuses instead of
+    trusting every caller to check (audit: lp_chain_audit.py).
+    """
+    import os
+    if os.environ.get("LP_TEST_LIVE") != "1":
+        return False, "LP_TEST_LIVE != 1"
+    if not os.path.exists(os.path.expanduser("~/.hermes/lp_tests/AUTONOMY_ON")):
+        return False, "AUTONOMY_ON flag absent"
+    return True, "armed"
+
 
 # ─── Execution Engine ───────────────────────────────────────────────
 class ExecutionEngine:
     def __init__(self, price_engine: PriceEngine, portfolio: PortfolioManager):
         self.pe = price_engine
         self.portfolio = portfolio
-        self.acct = json.load(open(VAULT_PATH))
-        from lp_broadcast_guard import broadcast_once_hive
-        # BROADCAST-ONCE: self.hive feeds ONLY swap/add/remove broadcasts
-        # (Market at :1030, LiquidityPool at :1047/:1066) — never reads —
-        # so RPC failures must raise, never auto-retry (lp_broadcast_guard.py).
-        self.hive = broadcast_once_hive(node=[HIVE_RPC], keys={self.acct["account"]: self.acct["active"]})
+        # LIVE GATE: never load the key and never build a signing instance
+        # unless live is deliberately armed. Read-only callers still work;
+        # every broadcast method refuses with LiveNotArmed.
+        self.armed, self._not_armed_why = live_armed()
+        self.acct = json.load(open(VAULT_PATH)) if self.armed else None
+        self.hive = None
+        if self.armed:
+            from lp_broadcast_guard import broadcast_once_hive
+            # BROADCAST-ONCE: self.hive feeds ONLY swap/add/remove broadcasts
+            # (Market at :1030, LiquidityPool at :1047/:1066) — never reads —
+            # so RPC failures must raise, never auto-retry (lp_broadcast_guard.py).
+            self.hive = broadcast_once_hive(node=[HIVE_RPC], keys={self.acct["account"]: self.acct["active"]})
+
+    def _require_armed(self, what: str) -> None:
+        if not self.armed:
+            raise LiveNotArmed(f"{what} refused: live not armed ({self._not_armed_why})")
+
+    def _log_broadcast(self, action: str, tx_result, detail: dict) -> None:
+        """Self-ledgering: everything that leaves this class is recorded with
+        its trx_id, so reconciliation can never again disagree because a caller
+        forgot to log (lp_chain_audit.py)."""
+        rec = {"logged_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "action": action,
+               "live": True, "pipeline": "liquidity_agent_v2",
+               "detail": detail, "tx_result": tx_result}
+        try:
+            import lp_executor_test as _le
+            _le._log(rec)                   # canonical writer (owns the path)
+        except Exception as e:              # never mask a trade — but be loud
+            print(f"    !! LEDGER WRITE FAILED ({e}): {json.dumps(rec)[:400]}")
 
     def swap(self, from_sym: str, to_sym: str, amount: float, slippage: float = 0.02) -> bool:
         """Execute a swap via Hive Engine market."""
@@ -1103,10 +1173,12 @@ class ExecutionEngine:
             
             market = Market(blockchain_instance=self.hive)
             
+            self._require_armed(f"market.buy {amount} {from_sym}")
             # Execute actual market order - signature: buy(account, amount, symbol, price)
             # price=0 means market order, buys `amount` of `symbol` paying with quote
             result = market.buy(self.acct["account"], amount, from_sym, 0)
-            
+            self._log_broadcast("swap", result,
+                                {"from": from_sym, "to": to_sym, "amount": amount})
             print(f"  ✓ Swapped {amount:.6f} {from_sym} -> {to_sym}")
             return True
         except Exception as e:
@@ -1118,9 +1190,12 @@ class ExecutionEngine:
         try:
             from nectarengine.pool import LiquidityPool
             
+            self._require_armed(f"add_liquidity {base}:{quote}")
             lp = LiquidityPool(blockchain_instance=self.hive)
             # Include max_deviation=1% tolerance to ensure contract acceptance
             result = lp.add_liquidity(self.acct["account"], f"{base}:{quote}", base_amt, quote_amt, max_deviation=1)
+            self._log_broadcast("add_liquidity", result,
+                                {"pool": f"{base}:{quote}", "base_amt": base_amt, "quote_amt": quote_amt})
             
             if not result:
                 print(f"  ✗ Failed to add liquidity to {base}:{quote}")
