@@ -195,6 +195,80 @@ def diff_fee_snapshots(before, after):
 DEFAULT_SNAPSHOT_STORE = os.path.expanduser('~/.hermes/lp_tests/fee_snapshots.jsonl')
 
 
+# Retention policy for the append-only snapshot store.
+#
+# The reader only ever consults the MOST RECENT prior row for a (pool, account)
+# pair, so keeping the last N rows per pair preserves diff semantics exactly.
+# A flat time-based cut does NOT: it can drop the newest prior row for a pair
+# and silently downgrade fee attribution from 'measured' to 'snapshot_recorded'
+# (unmeasured), with no error anywhere. Rotate per-pair, never by timestamp.
+SNAPSHOT_RETAIN_PER_PAIR = int(os.environ.get('LP_SNAPSHOT_RETAIN_PER_PAIR', '720'))
+# Rotate only when the store grows past this; ordinary hourly ticks never trip it.
+SNAPSHOT_ROTATE_BYTES = int(os.environ.get('LP_SNAPSHOT_ROTATE_BYTES',
+                                           str(8 * 1024 * 1024)))
+
+
+def _read_snapshot_rows(store):
+    """ONE pass over the store -> ({(pool, account): [row, ...]}, unparsable).
+
+    Rows keep append order within a key. A corrupt line is counted and skipped:
+    never parsed as truth, never allowed to abort the read.
+    """
+    rows_by_key = {}
+    unparsable = 0
+    if not store.exists():
+        return rows_by_key, unparsable
+    for line in store.read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            unparsable += 1
+            continue
+        key = (row.get('pool'), (row.get('snapshot') or {}).get('account'))
+        rows_by_key.setdefault(key, []).append(row)
+    return rows_by_key, unparsable
+
+
+def _rotate_in_place(store, rows_by_key, keep, dry_run=False):
+    """Keep the last `keep` rows per key; atomically replace the store."""
+    kept, dropped = [], 0
+    for key in sorted(rows_by_key, key=lambda k: (str(k[0]), str(k[1]))):
+        rows = rows_by_key[key]
+        if keep > 0:
+            kept.extend(rows[-keep:])
+            dropped += max(0, len(rows) - keep)
+        else:
+            dropped += len(rows)
+    before_bytes = store.stat().st_size if store.exists() else 0
+    payload = ''.join(json.dumps(r) + '\n' for r in kept)
+    report = {'store': str(store), 'keep_per_pair': keep,
+              'rows_before': sum(len(v) for v in rows_by_key.values()),
+              'rows_after': len(kept), 'rows_dropped': dropped,
+              'pairs': len(rows_by_key),
+              'bytes_before': before_bytes, 'bytes_after': len(payload.encode()),
+              'dry_run': bool(dry_run)}
+    if dry_run or dropped == 0:
+        return report
+    store.parent.mkdir(parents=True, exist_ok=True)
+    tmp = store.with_name(store.name + '.rotating')
+    tmp.write_text(payload)
+    os.replace(tmp, store)   # atomic: a reader never observes a partial store
+    return report
+
+
+def rotate_fee_snapshots(*, store_path=None, keep_per_pair=None, dry_run=False):
+    """Manual / dry-run entry point. Default keeps SNAPSHOT_RETAIN_PER_PAIR/pair."""
+    store = Path(store_path or DEFAULT_SNAPSHOT_STORE)
+    rows_by_key, unparsable = _read_snapshot_rows(store)
+    rep = _rotate_in_place(store, rows_by_key,
+                           SNAPSHOT_RETAIN_PER_PAIR if keep_per_pair is None
+                           else keep_per_pair, dry_run=dry_run)
+    rep['unparsable_skipped'] = unparsable
+    return rep
+
+
 def record_fee_snapshots(rpc, account, positions, *, store_path=None, at_ms,
                          contract_hash=None):
     """Snapshot each held pool, diff vs the most recent prior snapshot.
@@ -203,6 +277,11 @@ def record_fee_snapshots(rpc, account, positions, *, store_path=None, at_ms,
     RPC failure (fail-closed 'unavailable'). contract_hash is verified against
     the known-good deployed set; unrecognized hash skips snapshots entirely.
     Returns {'results': {pool: {...}}} — JSON-serializable, exact amounts.
+
+    2026-11-05: the prior lookup used to re-read the ENTIRE store once PER PAIR
+    (O(pairs x rows)). At 24k rows x every held pool that — not disk — is the
+    real cost of this file. One read per call now builds every pair's prior, and
+    the same read feeds a threshold-gated per-pair rotation.
     """
     from lp_fee_evidence import (snapshot_fee_state, diff_fee_snapshots,
                                  KNOWN_GOOD_PREFIXES, KNOWN_CONTRACT_HASHES)
@@ -214,6 +293,18 @@ def record_fee_snapshots(rpc, account, positions, *, store_path=None, at_ms,
                        any(str(contract_hash).startswith(p)
                            for p in KNOWN_GOOD_PREFIXES))
               else 'contract_unverified')
+    # Single read for the whole call: builds every pair's prior snapshot, and is
+    # the input to threshold rotation below.
+    rows_by_key, unparsable = _read_snapshot_rows(store)
+    priors = {k: v[-1].get('snapshot') for k, v in rows_by_key.items()
+              if v and v[-1].get('snapshot')}
+    rotation = None
+    try:
+        if store.exists() and store.stat().st_size > SNAPSHOT_ROTATE_BYTES:
+            rotation = _rotate_in_place(store, rows_by_key,
+                                        SNAPSHOT_RETAIN_PER_PAIR)
+    except Exception as e:   # maintenance must never break a live run
+        rotation = {'error': f'{type(e).__name__}: {e}'}
     results = {}
     for pair in pairs:
         if hs != 'ok':
@@ -225,18 +316,7 @@ def record_fee_snapshots(rpc, account, positions, *, store_path=None, at_ms,
             results[pair] = {'status': 'unavailable',
                              'reason': snap.get('reason', 'snapshot failed')}
             continue
-        prior = None
-        if store.exists():
-            for line in store.read_text().splitlines():
-                if not line.strip():
-                    continue
-                try:
-                    row = json.loads(line)
-                except json.JSONDecodeError:
-                    continue  # corrupt line; never fabricate from it
-                s = row.get('snapshot', {})
-                if row.get('pool') == pair and s.get('account') == account:
-                    prior = s  # latest matching (append order)
+        prior = priors.get((pair, account))
         store.parent.mkdir(parents=True, exist_ok=True)
         with open(store, 'a') as f:
             f.write(json.dumps({'pool': pair, 'account': account,
@@ -247,7 +327,15 @@ def record_fee_snapshots(rpc, account, positions, *, store_path=None, at_ms,
             if entry['diff'].get('status') == 'measured':
                 entry['status'] = 'measured'
         results[pair] = entry
-    return {'results': results}
+    out = {'results': results}
+    # Surface the maintenance facts so a caller (and the cron artifact) can see
+    # that a rotation ran and that corrupt lines were skipped, rather than
+    # inferring it from a change in file size.
+    if unparsable:
+        out['unparsable_lines_skipped'] = unparsable
+    if rotation is not None:
+        out['rotation'] = rotation
+    return out
 
 
 def collect_fee_evidence(rpc, account, pool_pairs, *, at_ms, contract_hash=None):
