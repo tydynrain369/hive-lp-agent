@@ -27,12 +27,43 @@ FEE_RATE = 0.0025                 # Hive-Engine LP fee
 SECONDS_PER_YEAR_H = 8760
 
 
-def _load_fee_windows():
-    """Group snapshots by pool, return first/last per pool."""
-    if not os.path.exists(FEE_SNAPSHOTS_PATH):
+# --- fee-evidence aggregation (2026-11-05) --------------------------------
+# The authoritative fee APR used to be the FIRST-to-LAST cumulative volume delta
+# over a pool's whole retained history. That is the anti-pattern
+# hive-lp-decision-preferences names: one anomalous interval (a whale swap, a
+# re-funding) flips the entire window, and because it divided by the window SPAN
+# it also meant trimming history for retention silently re-scoped the figure it
+# reported. It now aggregates CONSECUTIVE-snapshot intervals with outlier
+# suppression, so an outlier is confined to the interval containing it and only
+# the intervals still present contribute.
+#
+# lp_decision.load_fee_evidence() already aggregated consecutive deltas for its
+# own figure, which is explicitly marked NOT authoritative (it divides base-token
+# volume by a sum of two reserves in two different tokens). The two now share an
+# aggregation shape instead of drifting further apart.
+FEE_APR_WINSOR_PCT = 0.90     # clamp the top decile of the ACTIVE intervals
+FEE_APR_MIN_INTERVALS = 5     # below this there is nothing worth trimming
+_SNAPSHOT_CACHE = {}
+
+
+def _snapshots_by_pool():
+    """{pool: [rows, time-ordered]} for the whole store, read once per file.
+
+    Cached against (mtime, size): the hourly cron's fresh process reads the
+    store once, while a long-lived caller cannot be served stale rows. Reading
+    the store inside a per-pool function made this O(pools x rows) -- the same
+    mistake lp_fee_evidence.record_fee_snapshots() had.
+    """
+    path = FEE_SNAPSHOTS_PATH
+    if not os.path.exists(path):
         return {}
+    st = os.stat(path)
+    key = (st.st_mtime_ns, st.st_size)
+    cached = _SNAPSHOT_CACHE.get(path)
+    if cached is not None and cached[0] == key:
+        return cached[1]
     per_pool = defaultdict(list)
-    with open(FEE_SNAPSHOTS_PATH) as f:
+    with open(path) as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -41,49 +72,101 @@ def _load_fee_windows():
                 s = json.loads(line)
             except Exception:
                 continue
-            per_pool[s["pool"]].append(s)
-    out = {}
-    for pool, snaps in per_pool.items():
-        snaps.sort(key=lambda x: x["at_ms"])
-        if len(snaps) >= 2:
-            out[pool] = (snaps[0], snaps[-1])
-    return out
+            if s.get("pool"):
+                per_pool[s["pool"]].append(s)
+    for arr in per_pool.values():
+        arr.sort(key=lambda s: s.get("at_ms") or 0)
+    _SNAPSHOT_CACHE[path] = (key, per_pool)
+    return per_pool
+
+
+def _interval_fee_aprs(snaps):
+    """Per-interval observations over consecutive snapshots, in order.
+
+    Each observation is (apr_pct, fee_base, fee_quote, dt_h), where the two fee
+    figures are OUR fee entitlement in each token (volume x rate x our share),
+    matching what earned_base/earned_quote have always meant -- not the raw
+    volume delta. Only intervals whose BOTH endpoints are 'ok' and whose counters
+    did not go backwards contribute: a negative delta is a counter reset
+    (re-created or re-funded pool), which is not a fee measurement and must never
+    be read as one.
+    """
+    obs = []
+    for a, b in zip(snaps, snaps[1:]):
+        sa, sb = a.get("snapshot") or {}, b.get("snapshot") or {}
+        if sa.get("status") != "ok" or sb.get("status") != "ok":
+            continue
+        try:
+            dt_h = (int(b["at_ms"]) - int(a["at_ms"])) / 3_600_000.0
+            if dt_h <= 0:
+                continue
+            share = float(sa["share"]["num"]) / float(sa["share"]["den"])
+            va, vb = sa["volumes"], sb["volumes"]
+            d_base = float(vb["baseVolume"]) - float(va["baseVolume"])
+            d_quote = float(vb["quoteVolume"]) - float(va["quoteVolume"])
+            r = sa["reserves"]
+            toks = list(r.keys())
+            tvl = (float(r[toks[0]]) + float(r[toks[1]])) * share
+        except Exception:
+            continue
+        if tvl <= 0 or d_base < 0 or d_quote < 0:
+            continue
+        fees = (d_base + d_quote) * FEE_RATE * share
+        obs.append(((fees / dt_h) * SECONDS_PER_YEAR_H / tvl * 100.0,
+                    d_base * FEE_RATE * share, d_quote * FEE_RATE * share, dt_h))
+    return obs
+
+
+def _winsorised_mean(xs, pct=FEE_APR_WINSOR_PCT):
+    """Mean of xs with the top (1-pct) of the ACTIVE values clamped.
+
+    The cap is taken over NON-ZERO entries deliberately. A percentile over every
+    entry collapses to zero as soon as most intervals are quiet: 90 zero-volume
+    hours put the p90 at zero, so every burst is clamped away and a pool that
+    genuinely earns reads as a zombie. Capping by the typical ACTIVE interval
+    leaves quiet intervals at zero -- the honest reading, since the mean is
+    spread over every hour we held the position -- while stopping one whale hour
+    from dominating. Returns (mean, cap); cap is None when nothing was clamped.
+    """
+    n = len(xs)
+    if n == 0:
+        return None, None
+    active = sorted(x for x in xs if x > 0)
+    if len(active) < FEE_APR_MIN_INTERVALS:
+        return sum(xs) / n, None
+    cap = active[max(0, min(int(len(active) * pct) - 1, len(active) - 1))]
+    return sum(min(x, cap) for x in xs) / n, cap
 
 
 def measure_fee_apr(pool):
-    """Return dict with fee_apr_pct, earned_base, earned_quote, window_h. None if insufficient data."""
-    windows = _load_fee_windows()
-    if pool not in windows:
+    """Winsorised mean of per-interval fee APR over consecutive snapshots.
+
+    Returns fee_apr_pct, earned_base, earned_quote and window_h, plus audit
+    fields (intervals, capped_intervals, apr_median, apr_max). None when no
+    interval qualifies -- never a fabricated 0, so a caller cannot mistake
+    "unmeasurable" for "measured zero".
+    """
+    obs = _interval_fee_aprs(_snapshots_by_pool().get(pool, []))
+    if not obs:
         return None
-    s0, s1 = windows[pool]
-    snap0, snap1 = s0["snapshot"], s1["snapshot"]
-    if snap0.get("status") != "ok" or snap1.get("status") != "ok":
-        return None
-    try:
-        share = float(snap0["share"]["num"]) / float(snap0["share"]["den"])
-    except Exception:
-        return None
-    dt_h = (s1["at_ms"] - s0["at_ms"]) / 3_600_000.0
-    if dt_h <= 0:
-        return None
-    v0, v1 = snap0["volumes"], snap1["volumes"]
-    r0 = snap0["reserves"]
-    tokens = list(r0.keys())
-    dVol_base = float(v1["baseVolume"]) - float(v0["baseVolume"])
-    dVol_quote = float(v1["quoteVolume"]) - float(v0["quoteVolume"])
-    fee_base_my = dVol_base * FEE_RATE * share
-    fee_quote_my = dVol_quote * FEE_RATE * share
-    res_base = float(r0[tokens[0]]); res_quote = float(r0[tokens[1]])
-    my_tvl = (res_base + res_quote) * share
-    if my_tvl <= 0:
-        return None
-    fees_total = fee_base_my + fee_quote_my
-    apr = (fees_total / dt_h) * SECONDS_PER_YEAR_H / my_tvl * 100
+    aprs = [o[0] for o in obs]
+    apr_pct, cap = _winsorised_mean(aprs)
+    srt = sorted(aprs)
     return {
-        "fee_apr_pct": round(apr, 3),
-        "earned_base": fee_base_my,
-        "earned_quote": fee_quote_my,
-        "window_h": round(dt_h, 2),
+        "fee_apr_pct": round(apr_pct, 3),
+        "earned_base": sum(o[1] for o in obs),
+        "earned_quote": sum(o[2] for o in obs),
+        # Sum of the CONTRIBUTING intervals, not the first-to-last span: the
+        # numerator sums those same intervals, so a gap between them must not
+        # be charged as hours we earned nothing in.
+        "window_h": round(sum(o[3] for o in obs), 2),
+        "intervals": len(obs),
+        "capped_intervals": (sum(1 for a in aprs if a > cap)
+                             if cap is not None else 0),
+        "apr_median": round(srt[len(srt) // 2], 3),
+        "apr_max": round(srt[-1], 3),
+        "aggregation": "winsorised mean of per-interval APR "
+                       "(consecutive snapshots)",
     }
 
 
