@@ -24,16 +24,35 @@
 #   failure it prints a short tail of the log, so the cron alert carries the
 #   reason. The full transcript always lands in the log beside AUTONOMY_ON.
 #
-# EXIT  0 coherent | 1 drift detected | 2 suite failed
+# DEADLINES (2026-11-06) -- why both steps run under the AgentOS supervisor:
+#   This job had no deadline of its own. `lp-sync.sh` ends in a pytest run that
+#   can block on live RPC, and a cron job that never returns never alerts --
+#   the alert fires when the job ENDS, so a hang is indistinguishable from a
+#   job that is still working. Both steps now run through run_supervised.py
+#   (agentos-process-supervisor), which adds a wall deadline, an idle deadline,
+#   a process-GROUP kill (the real tree is bash -> bash -> python -m pytest,
+#   so killing the direct child alone would orphan the suite) and a structured
+#   error in the log instead of silence. Tune with the LP_GUARD_* vars below;
+#   a timeout exits 124. Do not remove this wrapper as "redundant indirection".
+#
+# EXIT  0 coherent | 1 drift detected | 2 suite failed | 124 a step hit its deadline
 set -uo pipefail
 LIVE="$HOME/.hermes/scripts"
 LOG="$HOME/.hermes/lp_tests/drift-guard.log"
 mkdir -p "$(dirname "$LOG")"
 
+SUP="$HOME/.hermes/skills/system-protocols/agentos-process-supervisor/scripts/run_supervised.py"
+PY="${LP_GUARD_PY:-/usr/bin/python3}"
+[ -x "$PY" ] || PY="$(command -v python3)"
+
 {
   echo "=== lp-drift-guard $(date -Is) ==="
-  bash "$LIVE/tests/restore_tests.sh"
-  bash "$LIVE/lp-sync.sh" --local
+  "$PY" "$SUP" \
+    --timeout "${LP_GUARD_RESTORE_WALL:-300}" --idle "${LP_GUARD_RESTORE_IDLE:-120}" \
+    --label restore-tests -- bash "$LIVE/tests/restore_tests.sh"
+  "$PY" "$SUP" \
+    --timeout "${LP_GUARD_WALL:-2400}" --idle "${LP_GUARD_IDLE:-900}" \
+    --label lp-sync -- bash "$LIVE/lp-sync.sh" --local
 } >"$LOG" 2>&1
 rc=$?
 
