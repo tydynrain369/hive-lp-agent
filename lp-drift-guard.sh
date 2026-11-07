@@ -50,11 +50,24 @@ PY="${LP_GUARD_PY:-/usr/bin/python3}"
   "$PY" "$SUP" \
     --timeout "${LP_GUARD_RESTORE_WALL:-300}" --idle "${LP_GUARD_RESTORE_IDLE:-120}" \
     --label restore-tests -- bash "$LIVE/tests/restore_tests.sh"
+  rc_restore=$?
+  [ "$rc_restore" -ne 0 ] && echo "[lp-drift-guard] restore-tests exited $rc_restore"
   "$PY" "$SUP" \
     --timeout "${LP_GUARD_WALL:-2400}" --idle "${LP_GUARD_IDLE:-900}" \
     --label lp-sync -- bash "$LIVE/lp-sync.sh" --local
+  rc_sync=$?
 } >"$LOG" 2>&1
-rc=$?
+
+# REPORT THE FIRST NON-ZERO STEP. In a brace group the status is only the LAST
+# command's, so a dead restore step used to hide behind a healthy lp-sync run and
+# the guard reported "coherent" over a broken tree. A watchdog that can report
+# success while a step failed is worse than no watchdog.
+rc=0
+if [ "${rc_restore:-0}" -ne 0 ]; then
+  rc="${rc_restore}"
+elif [ "${rc_sync:-0}" -ne 0 ]; then
+  rc="${rc_sync}"
+fi
 
 if [ "$rc" -ne 0 ]; then
   echo "LP tree coherence guard FAILED (rc=$rc)"
