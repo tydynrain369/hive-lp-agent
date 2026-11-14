@@ -178,7 +178,9 @@ class TestRecommendationNoneAprNoCrash(unittest.TestCase):
         import lp_recommendation as R
         saved = R.measure_fee_apr
         try:
-            R.measure_fee_apr = lambda p: (
+            # (p, price_map=None): the production call passes the price map
+            # since the fee-yield consolidation (P0-14)
+            R.measure_fee_apr = lambda p, price_map=None: (
                 None if p == "NONE:HUB"
                 else {"fee_apr_pct": 2.0, "earned_base": 0.0,
                       "earned_quote": 0.0, "window_h": 1.0})

@@ -80,7 +80,7 @@ def _snapshots_by_pool():
     return per_pool
 
 
-def _interval_fee_aprs(snaps):
+def _interval_fee_aprs(snaps, price_map=None):
     """Per-interval observations over consecutive snapshots, in order.
 
     Each observation is (apr_pct, fee_base, fee_quote, dt_h), where the two fee
@@ -90,8 +90,18 @@ def _interval_fee_aprs(snaps):
     did not go backwards contribute: a negative delta is a counter reset
     (re-created or re-funded pool), which is not a fee measurement and must never
     be read as one.
+
+    2026-11-13 (Opus P0-14, round 4): the APR itself is USD-VALUED through the
+    price map. The old math summed raw token quantities on both sides —
+    (d_base + d_quote) fees over (r0 + r1) TVL — which mixes two units and
+    skews the figure by the tokens' price ratio (CENT:SWAP.HIVE read ~price-
+    ratio-fold off). An interval whose token prices are missing is UNPRICED:
+    it is skipped and counted, never valued at a fabricated rate. Returns
+    (obs, unpriced_count).
     """
+    price_map = price_map or {}
     obs = []
+    unpriced = 0
     for a, b in zip(snaps, snaps[1:]):
         sa, sb = a.get("snapshot") or {}, b.get("snapshot") or {}
         if sa.get("status") != "ok" or sb.get("status") != "ok":
@@ -106,18 +116,31 @@ def _interval_fee_aprs(snaps):
             d_quote = float(vb["quoteVolume"]) - float(va["quoteVolume"])
             r = sa["reserves"]
             toks = list(r.keys())
-            tvl = (float(r[toks[0]]) + float(r[toks[1]])) * share
+            t0, t1 = toks[0], toks[1]
         except Exception:
             continue
-        if tvl <= 0 or d_base < 0 or d_quote < 0:
+        if d_base < 0 or d_quote < 0:
             continue
-        fees = (d_base + d_quote) * FEE_RATE * share
-        obs.append(((fees / dt_h) * SECONDS_PER_YEAR_H / tvl * 100.0,
-                    d_base * FEE_RATE * share, d_quote * FEE_RATE * share, dt_h))
-    return obs
+        p0 = price_map.get(t0)
+        p1 = price_map.get(t1)
+        if not p0 or not p1:
+            # an unpriced interval is UNKNOWN, not zero — skip and count
+            unpriced += 1
+            continue
+        fees_usd = (d_base * float(p0) + d_quote * float(p1)) * FEE_RATE * share
+        tvl_usd = (float(r[t0]) * float(p0)
+                   + float(r[t1]) * float(p1)) * share
+        if tvl_usd <= 0:
+            unpriced += 1
+            continue
+        apr_pct = (fees_usd / dt_h) * SECONDS_PER_YEAR_H / tvl_usd * 100.0
+        obs.append((apr_pct,
+                    d_base * FEE_RATE * share, d_quote * FEE_RATE * share,
+                    dt_h))
+    return obs, unpriced
 
 
-def _winsorised_mean(xs, pct=FEE_APR_WINSOR_PCT):
+def _winsorised_mean(xs, pct=FEE_APR_WINSOR_PCT, dts=None):
     """Mean of xs with the top (1-pct) of the ACTIVE values clamped.
 
     The cap is taken over NON-ZERO entries deliberately. A percentile over every
@@ -127,30 +150,53 @@ def _winsorised_mean(xs, pct=FEE_APR_WINSOR_PCT):
     leaves quiet intervals at zero -- the honest reading, since the mean is
     spread over every hour we held the position -- while stopping one whale hour
     from dominating. Returns (mean, cap); cap is None when nothing was clamped.
+
+    2026-11-13 (Opus P1-14 companion, round 4): pass dts and the mean is
+    TIME-WEIGHTED — each interval counts by its LENGTH, so a 40-hour gap
+    weighs as 40 quiet hours instead of as one. Equal-weighting let one long
+    unmeasured stretch read the same as an hour of it.
     """
     n = len(xs)
     if n == 0:
         return None, None
     active = sorted(x for x in xs if x > 0)
     if len(active) < FEE_APR_MIN_INTERVALS:
+        if dts is not None and len(dts) == n and sum(dts) > 0:
+            return (sum(x * dt for x, dt in zip(xs, dts)) / sum(dts), None)
         return sum(xs) / n, None
     cap = active[max(0, min(int(len(active) * pct) - 1, len(active) - 1))]
+    if dts is not None and len(dts) == n and sum(dts) > 0:
+        return (sum(min(x, cap) * dt for x, dt in zip(xs, dts)) / sum(dts),
+                cap)
     return sum(min(x, cap) for x in xs) / n, cap
 
 
-def measure_fee_apr(pool):
-    """Winsorised mean of per-interval fee APR over consecutive snapshots.
+def measure_fee_apr(pool, price_map=None):
+    """Winsorised, TIME-WEIGHTED mean of per-interval fee APR, USD-valued.
+
+    This is THE authoritative fee APR — the one source (fee-yield
+    consolidation, 2026-11-13): every verdict, the ladder and the reports
+    consume this figure or nothing. PoolData.apr is diagnostic-only;
+    lp_decision's local figure is metadata-only and never drives a verdict.
 
     Returns fee_apr_pct, earned_base, earned_quote and window_h, plus audit
-    fields (intervals, capped_intervals, apr_median, apr_max). None when no
-    interval qualifies -- never a fabricated 0, so a caller cannot mistake
-    "unmeasurable" for "measured zero".
+    fields (intervals, capped_intervals, unpriced_intervals, apr_median,
+    apr_max). None when no interval qualifies -- never a fabricated 0, so a
+    caller cannot mistake "unmeasurable" for "measured zero".
+
+    price_map (token -> USD) is required for the USD valuation: without
+    prices the intervals are unpriced and the APR is None — never a
+    unit-mixed guess across two tokens' quantities (P0-14).
     """
-    obs = _interval_fee_aprs(_snapshots_by_pool().get(pool, []))
+    snaps = _snapshots_by_pool().get(pool, [])
+    if not snaps:
+        return None
+    obs, unpriced = _interval_fee_aprs(snaps, price_map)
     if not obs:
         return None
     aprs = [o[0] for o in obs]
-    apr_pct, cap = _winsorised_mean(aprs)
+    dts = [o[3] for o in obs]
+    apr_pct, cap = _winsorised_mean(aprs, dts=dts)
     srt = sorted(aprs)
     return {
         "fee_apr_pct": round(apr_pct, 3),
@@ -163,10 +209,11 @@ def measure_fee_apr(pool):
         "intervals": len(obs),
         "capped_intervals": (sum(1 for a in aprs if a > cap)
                              if cap is not None else 0),
+        "unpriced_intervals": unpriced,
         "apr_median": round(srt[len(srt) // 2], 3),
         "apr_max": round(srt[-1], 3),
-        "aggregation": "winsorised mean of per-interval APR "
-                       "(consecutive snapshots)",
+        "aggregation": "winsorised, time-weighted mean of per-interval "
+                       "USD-valued APR (consecutive snapshots)",
     }
 
 
@@ -411,7 +458,9 @@ def generate_recommendation(held_pools, reward_discovery, position_lookup=None,
         # Coercing it to 0.0 defeated the cron's `is not None` filter and fed a
         # fabricated authoritative 0.0 into decide(), making the decision
         # layer's fail-closed branch dead on the live path. None is not zero.
-        fee = measure_fee_apr(p)
+        # ONE authoritative APR, now USD-valued through the price map the
+        # caller already holds (fee-yield consolidation, P0-14)
+        fee = measure_fee_apr(p, price_map=price_map)
         if fee is None:
             fee = {"fee_apr_pct": None, "window_h": None}
         rew = summarize_rewards(reward_discovery.get(p))
