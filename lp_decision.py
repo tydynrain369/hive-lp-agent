@@ -738,7 +738,11 @@ def decide(held_pools: list, reward_info: dict, fee_evidence: Optional[dict] = N
             if action == "expand":
                 # fee_apr may be None (UNKNOWN): in a RANKING score an unknown
                 # fee contributes zero — same convention as the None-safe
-                # reward_per_hive term below. Gating is separate and refuses.
+                # reward_per_hive term below. NOTE (Opus review A6): this is
+                # ranking ONLY — plan_idle_deploy does not check APR today, so
+                # an unknown-APR pool CAN become the ladder's deploy
+                # destination via its reward rate alone. Whether that is
+                # wanted is an OPEN design question for the operator.
                 score = ((fee_apr if fee_apr is not None else 0.0)
                          * FEE_APR_SCORE_WEIGHT
                          + reward_count * REWARD_TOKEN_SCORE_WEIGHT)
@@ -844,12 +848,15 @@ def decide(held_pools: list, reward_info: dict, fee_evidence: Optional[dict] = N
             elif fee_apr > expand_score:
                 expand_score = fee_apr
                 expand_candidate = pool
-        elif pays_something and dividend_status != "valued":
-            # 2026-11-13 (Claude review P0-8): rewards EXIST but could not be
-            # valued (unpriced token, no price map, split unavailable). The old
-            # fall-through read that as "weak on both axes" and emitted
-            # consolidate — a release instruction driven by a PRICING gap, not
-            # by the pool. Unvalued is unknown, not weak.
+        elif pays_something and (dividend_status != "valued"
+                                 or realisable_fraction is None):
+            # 2026-11-13 (Claude review P0-8; Opus review A6 extends it):
+            # rewards EXIST but their realisable share could not be judged —
+            # unpriced token, no price map, OR every spread unread (frac=None,
+            # "no basis to judge", while dividend_status still says "valued").
+            # The old fall-through read any of these as "weak on both axes"
+            # and emitted consolidate — a release instruction driven by a
+            # PRICING gap, not by the pool. Unvalued is unknown, not weak.
             action = "hold"
             reason = (f"rewards present ({reward_count} tokens) but dividend "
                       f"unvalued ({dividend_status}) — not releasing on "

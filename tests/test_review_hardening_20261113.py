@@ -48,6 +48,14 @@ class _EmptyPE:
     pools = {}
 
 
+class _PoolRow:
+    """PoolData-shaped row (same shape as tests/test_realloc_executor.py)."""
+    def __init__(self, b, q, total=1000.0):
+        self.base_quantity = b
+        self.quote_quantity = q
+        self.total_shares = total
+
+
 # ─── P0-1: the chokepoint ────────────────────────────────────────────
 class TestLiveChokepoint(unittest.TestCase):
     """LP_TEST_LIVE=1 in the env must NOT be sufficient to sign."""
@@ -110,7 +118,8 @@ class TestRouteCostFailClosed(unittest.TestCase):
         out = X._route_cost_check(_Agent(pe=_EmptyPE()), "SRC:POOL",
                                   "DST:POOL", {"TOK": 5.0})
         self.assertEqual(out["status"], "refused")
-        self.assertIn("no route could be priced", out["verdict"])
+        self.assertIn("not every leg could be priced", out["verdict"])
+        self.assertIn("no swap route", out["verdict"])
 
     def test_missing_price_engine_refuses_when_conversion_needed(self):
         out = X._route_cost_check(_Agent(pe=None), "SRC:POOL", "DST:POOL",
@@ -125,6 +134,62 @@ class TestRouteCostFailClosed(unittest.TestCase):
                                   {"DST": 3.0})
         self.assertEqual(out["status"], "not-priced")
         self.assertIn("no released token requires", out["detail"])
+
+
+# ─── Opus review A4a: a MIXED pricing result refuses ─────────────────
+class TestRouteCostMixedRefuses(unittest.TestCase):
+
+    def test_one_priced_one_failed_refuses(self):
+        """Two released tokens need conversion; one prices, one has no route.
+        The capital leaves the pool as a SET — a priced subset must not carry
+        the plan through (the exact P0-4 scenario, pinned 2026-11-13)."""
+        class OneDeadEndPE:
+            # TOK can route to DST via TOK:DST; ORPH has NO pool at all.
+            pools = {
+                "TOK:DST": _PoolRow(1_000_000.0, 1_000_000.0,
+                                    total=1_000_000.0),
+                "DST:POOL": _PoolRow(1_000_000.0, 1_000_000.0,
+                                     total=1_000_000.0),
+            }
+        out = X._route_cost_check(_Agent(pe=OneDeadEndPE()), "SRC:POOL",
+                                  "DST:POOL", {"TOK": 5.0, "ORPH": 2.0})
+        self.assertEqual(out["status"], "refused")
+        self.assertIn("not every leg could be priced", out["verdict"])
+        self.assertIn("ORPH", out["verdict"])
+
+    def test_empty_attribution_refuses(self):
+        """_released_amounts returning {} upstream (unreadable pool row) is an
+        attribution FAILURE, not a healthy no-conversion plan."""
+        class NoRowsPE:
+            pools = {"SRC:POOL": None}   # row unreadable
+        out = X._route_cost_check(_Agent(pe=NoRowsPE()), "SRC:POOL",
+                                  "DST:POOL", {})
+        self.assertEqual(out["status"], "refused")
+        self.assertIn("could not be determined", out["verdict"])
+
+
+# ─── Opus review A5: the None-APR ranking must not crash ─────────────
+class TestRecommendationNoneAprNoCrash(unittest.TestCase):
+    """max(productive, key=fee_apr_pct) used to compare None with a float once
+    P0-6 let reward-productive pools carry None — a TypeError that blinded the
+    whole hour's decision."""
+
+    def test_mixed_none_and_float_productive_ranks_without_typeerror(self):
+        import lp_recommendation as R
+        saved = R.measure_fee_apr
+        try:
+            R.measure_fee_apr = lambda p: (
+                None if p == "NONE:HUB"
+                else {"fee_apr_pct": 2.0, "earned_base": 0.0,
+                      "earned_quote": 0.0, "window_h": 1.0})
+            rec = R.generate_recommendation(
+                ["NONE:HUB", "MEAS:HUB"],
+                {"NONE:HUB": [{"mined_token": "GLOW"}],
+                 "MEAS:HUB": []},
+            )
+            self.assertIsNotNone(rec)
+        finally:
+            R.measure_fee_apr = saved
 
 
 # ─── P0-6/P0-7: UNKNOWN APR holds, never exits ───────────────────────

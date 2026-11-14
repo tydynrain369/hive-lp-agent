@@ -437,8 +437,14 @@ def generate_recommendation(held_pools, reward_discovery, position_lookup=None,
     for z in zombies:
         if not productive:
             continue
-        # Focus on the most productive: highest fee_apr first, fall back to reward count
-        target = max(productive, key=lambda x: (x["fee_apr_pct"], x["reward_token_count"]))
+        # Focus on the most productive: highest fee_apr first, fall back to reward count.
+        # 2026-11-13 (Opus review, A5): fee_apr_pct can now be None (UNKNOWN,
+        # P0-6) for reward-productive pools — a raw tuple compare would raise
+        # TypeError and blind the whole hour's decision. UNKNOWN ranks below
+        # every measured figure in this RANKING, not in any gate.
+        target = max(productive, key=lambda x: (
+            x["fee_apr_pct"] if x["fee_apr_pct"] is not None else -1.0,
+            x["reward_token_count"]))
         recommendations.append({
             "action": "exit_and_reallocate",
             "from_pool": z["pool"],

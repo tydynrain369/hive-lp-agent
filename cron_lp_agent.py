@@ -999,7 +999,14 @@ def main():
             # invariant. If the exit leg broadcast, the executor subprocess
             # below must NOT run — two capped removals in one tick is still
             # two removals.
-            _acted = any(a.get("status") == "broadcast" for a in actions)
+            # 2026-11-13 (Opus review, A3): "error" includes exceptions raised
+            # AFTER the node accepted the transaction (BroadcastResendRefused,
+            # timeout, lost reply) and "rejected" is equally ambiguous — in
+            # both, running the executor subprocess would be a SECOND removal
+            # in one tick. Anything that is not an explicitly safe no-op
+            # counts as acted.
+            _acted = any(a.get("status") not in ("dry-run", "skipped")
+                         for a in actions)
             if not actions:
                 print("  No exit action this round.")
             for a in actions:
@@ -1043,9 +1050,10 @@ def main():
             # idle SWAP.HIVE through the proven from-idle path
             # (2026-10-17 08:20 HST, first live run: swap legs +
             # add_liquidity all confirmed). The executor's own
-            # once-per-day throttle keeps this from dust-adding in
-            # a loop; the $0.05 cap + 1% route ceiling + advisory
-            # verdict + validated-price sizing all stack inside.
+            # 6-hour throttle (IDLE_DEPLOY_MIN_INTERVAL_HOURS) keeps
+            # this from dust-adding in a loop; the $0.05 cap + 1%
+            # route ceiling + advisory verdict + validated-price
+            # sizing all stack inside.
             print("  [AUTONOMY] expand verdict with idle capital — "
                   "invoking the from-idle deploy (capped, live):")
             _r = _sp.run(

@@ -25,11 +25,20 @@ class FakePE:
     general graph search. A fixture without .pools yields an empty graph, every
     token is 'unroutable', and every other assertion is starved. This one is a
     fully-connected star so any token reaches any other in one hop.
+
+    2026-11-13 (Opus review): rows are HONEST _PoolRow objects, not None. The
+    old {name: None} rows made _released_amounts return {} and — before the
+    empty-attribution refusal — every test sailed through the route gate on
+    the 'not-priced' blind path, never exercising pricing at all. Reserves are
+    DEEP (1M / 1M shares) so a 10-1000 share position is a rounding error of
+    the pool: impact is noise and the gate prices on fees alone, which is what
+    these tests' subjects require.
     """
 
     def __init__(self, pool_ids=None):
         ids = pool_ids or ["SRC:DST", "SRC:POOL", "DST:POOL", "OTHER:X"]
-        self.pools = {p: None for p in ids}
+        self.pools = {p: _PoolRow(1_000_000.0, 1_000_000.0, total=1_000_000.0)
+                      for p in ids}
 
     def find_path(self, a, b):
         if a == b:
@@ -337,12 +346,21 @@ class TestSelfRemovingPoolDefect(unittest.TestCase):
         """
         class TwoPoolsPE:
             def __init__(self):
+                # 2026-11-13: honest deep rows (the {pair: None} style fed the
+                # empty-attribution blind path the route gate now refuses).
+                # Released amounts are ~1e-6 of reserves, so pricing runs on
+                # fees alone and the route genuinely passes on its merits.
                 self.pools = {
-                    "HSBIDAO:PIXYDUST": None,   # source, being drained
-                    "PIXYDUST:SWAP.HIVE": None,  # independent second pool
-                    "HSBIDAO:SWAP.HIVE": None,   # independent second pool
-                    "SWAP.HIVE:CENT": None,
-                    "CENT:POB": None,
+                    "HSBIDAO:PIXYDUST": _PoolRow(1_000_000.0, 1_000_000.0,
+                                                 total=1_000_000.0),  # source, being drained
+                    "PIXYDUST:SWAP.HIVE": _PoolRow(1_000_000.0, 1_000_000.0,
+                                                   total=1_000_000.0),  # independent second pool
+                    "HSBIDAO:SWAP.HIVE": _PoolRow(1_000_000.0, 1_000_000.0,
+                                                  total=1_000_000.0),   # independent second pool
+                    "SWAP.HIVE:CENT": _PoolRow(1_000_000.0, 1_000_000.0,
+                                               total=1_000_000.0),
+                    "CENT:POB": _PoolRow(1_000_000.0, 1_000_000.0,
+                                         total=1_000_000.0),
                 }
         agent = FakeExecutor(pe=TwoPoolsPE())
         X.TestExecutor = lambda a: agent

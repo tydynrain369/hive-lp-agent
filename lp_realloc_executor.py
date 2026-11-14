@@ -392,7 +392,15 @@ def _route_cost_check(agent, src_pool, dst_pool, released_amounts):
            "threshold_pct": ROUTE_COST_REFUSAL_PCT,
            "paths": None, "detail": None}
     if not released_amounts:
-        out["detail"] = "no released amounts to price"
+        # 2026-11-13 (Opus review, A4b): _released_amounts returns {} when the
+        # pool row is missing, attributes are unreadable, our share reads 0,
+        # or ANY exception fires. A plan this far has a real position (the
+        # dust/value gates passed upstream), so empty here means ATTRIBUTION
+        # FAILED — refusing, not waving through as a healthy no-conversion.
+        out["status"] = "refused"
+        out["verdict"] = ("refusing: released amounts could not be determined "
+                          "(empty attribution) — cannot price what we cannot "
+                          "see")
         return out
 
     # Which released tokens actually NEED converting? Decided first, so a plan
@@ -453,6 +461,16 @@ def _route_cost_check(agent, src_pool, dst_pool, released_amounts):
             worst = row
 
     out["paths"] = rows
+    # 2026-11-13 (Opus review, A4a): a MIXED result used to pass — token A
+    # prices fine while token B has no route / errors / cannot absorb, and the
+    # priced worst-leg carried the plan through. Any failure on a token that
+    # needs conversion refuses the whole plan: the released capital leaves the
+    # pool as a SET, not as the subset that happened to price.
+    if failures:
+        out["status"] = "refused"
+        out["verdict"] = ("refusing: released capital requires conversion and "
+                          "not every leg could be priced — " + "; ".join(failures))
+        return out
     if worst is None:
         out["status"] = "refused"
         out["verdict"] = ("refusing: released capital requires conversion but "
@@ -987,6 +1005,17 @@ def execute_idle_deploy(agent, plan, allow_execute):
         plan["reason"] = ("dry-run: LP_TEST_LIVE=1 + --execute "
                           "required to broadcast")
         return plan
+    # 2026-11-13 (Opus review, N2): the swap legs below sign DIRECTLY — only
+    # the final add goes through TestExecutor's chokepoint. Without this check,
+    # LP_TEST_LIVE=1 + --execute with the AUTONOMY_ON flag absent would
+    # broadcast two swaps and THEN refuse the add, stranding tokens on exactly
+    # the path the two-key model claims to cover.
+    from liquidity_agent_v2 import live_armed
+    _armed, _why = live_armed()
+    if not _armed:
+        plan["executed"] = False
+        plan["reason"] = f"live not armed: {_why}"
+        return plan
     if plan.get("action") != "deploy_idle":
         return plan
 
@@ -1180,7 +1209,7 @@ def execute_idle_deploy(agent, plan, allow_execute):
               "post1": post1, "live": True})
         return plan
     ok2, tx2, info2 = _swap_leg(quote, leg2_hive)
-    plan["steps"].append({"step": f"swap {leg_hive} {IN}->{quote}",
+    plan["steps"].append({"step": f"swap {leg2_hive} {IN}->{quote}",
                           "ok": ok2, "trx_id": tx2,
                           "info": info2})
     _log({"action": "deploy_idle_leg", "leg": quote, "ok": ok2,
