@@ -10,6 +10,18 @@ Hourly cron job that:
 """
 
 import os
+
+# 2026-11-14 (Fable round 5 follow-up, LIVE INCIDENT): the 00:19 read-only
+# tick and every overnight cron tick HUNG for their full timeout — an
+# un-timeouted socket to api.hive-engine.com (a library path neither he()
+# nor nectarengine's own 60s covers) sat in poll_schedule_timeout for 8h50m
+# with the peer never answering. A tick that cannot hang is a requirement:
+# bound EVERY socket created in this process. he() keeps its own 30s;
+# libraries with their own timeouts keep them; anything without one now
+# fails within 120s instead of stalling the hour. New sockets only —
+# created after this line, which is every connection this tick makes.
+import socket
+socket.setdefaulttimeout(120)
 import json
 from datetime import datetime
 from decimal import Decimal
