@@ -96,8 +96,10 @@ class TestMultiHop(unittest.TestCase):
         dust = RC.price_route(["A", "B"], Fraction(1, 1000), "A", self.CHAIN)
         huge = RC.price_route(["A", "B"], 400_000, "A", self.CHAIN)
         self.assertTrue(dust["ok"] and huge["ok"])
-        # dust is essentially pure fee
-        self.assertLess(dust["cost_pct"], 0.2)
+        # dust is essentially pure fee — 0.25% since the tradeFeeMul=0.9975
+        # contract verification (Opus N3, round 2; was 0.1%). The pin is that
+        # IMPACT does not fire on dust, so the bound is fee + noise.
+        self.assertLess(dust["cost_pct"], 0.3)
         # a trade eating 40% of the reserve is dominated by impact
         self.assertGreater(huge["cost_pct"], 10.0)
 

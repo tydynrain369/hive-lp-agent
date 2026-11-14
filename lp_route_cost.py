@@ -35,7 +35,11 @@ from fractions import Fraction
 # Hive-Engine swap fee. Confirmed against deployed contract behaviour; the
 # contract applies maxDeviation on the add side, and swapFee on this side.
 # Named and documented because a fee nobody can name is one nobody can tune.
-SWAP_FEE = Fraction(1, 1000)          # 0.1%
+# 0.25% — the deployed contract sets tradeFeeMul=0.9975
+# (references/deployed-marketpools.json, verified against the contract source;
+# Opus review N3, round 2). The old 0.1% understated route cost 2.5x, which
+# let a 5-hop route model 0.5% of fees where the chain takes ~1.25%.
+SWAP_FEE = Fraction(25, 10000)
 DEFAULT_MAX_HOPS = 5
 
 

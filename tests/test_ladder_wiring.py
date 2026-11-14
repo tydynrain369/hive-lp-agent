@@ -91,7 +91,12 @@ def _agent(hive_bal=0.05, hive_usd=0.05):
     a.portfolio = types.SimpleNamespace()
     a.portfolio.balances = {"SWAP.HIVE": types.SimpleNamespace(balance=hive_bal)}
     a.pe = types.SimpleNamespace(token_prices={"SWAP.HIVE": hive_usd},
-                                 market_liquidity={})
+                                 market_liquidity={},
+                                 # 2026-11-13: the plan pre-flight (Opus N1)
+                                 # refuses unknown precision — the production
+                                 # PriceEngine always carries this table
+                                 token_precisions={"SWAP.HIVE": 8, "PEPE": 8,
+                                                   "A": 8, "B": 8})
     return a
 
 
@@ -124,7 +129,9 @@ class TestExecutorPrefersLadder(unittest.TestCase):
         self.assertEqual(out["pool"], "B:SWAP.HIVE")
 
     def test_hold_at_ladder_destination_is_deployable(self):
-        out = self._plan(_decision("B:SWAP:HIVE", "hold"))
+        # 2026-11-13: the pre-flight's precision check exposed a fixture typo
+        # here — "B:SWAP:HIVE" (colon) named a token that does not exist.
+        out = self._plan(_decision("B:SWAP.HIVE", "hold"))
         self.assertEqual(out["action"], "deploy_idle")
 
     def test_exit_destination_refused(self):

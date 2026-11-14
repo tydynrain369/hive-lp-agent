@@ -977,6 +977,22 @@ def plan_idle_deploy(agent, decision, advisory=None):
                              "exceeds the 1% ceiling")
             return out
 
+    # PRE-FLIGHT (2026-11-13, Opus review N1): cheap failures here. Every
+    # failure AFTER leg 1 has broadcast strands tokens and bleeds fees —
+    # exactly what the PEPE ledger loop (11-01/11-02) shows. A pool with
+    # SWAP.HIVE on one side is FINE: the identity side needs no swap
+    # (single-leg deploy, execute stage), which is what the ladder's
+    # X:SWAP.HIVE destinations always required.
+    _bt, _qt = dst.split(":", 1)
+    _prec = getattr(agent.pe, "token_precisions", {}) or {}
+    _unknown = [t for t in (_bt, _qt) if _prec.get(t) is None]
+    if _unknown:
+        out["action"] = "blocked"
+        out["reason"] = (f"pre-flight: unknown token precision for "
+                         f"{_unknown} — refusing to size capital against an "
+                         f"invented precision")
+        return out
+
     out.update({
         "action": "deploy_idle",
         "pool": dst,
@@ -987,6 +1003,12 @@ def plan_idle_deploy(agent, decision, advisory=None):
         "throttle_file": IDLE_DEPLOY_THROTTLE,
     })
     return out
+
+
+# Post-broadcast verify: poll the balance until the output arrives or this
+# deadline passes (Opus review N1 — a single read 6s after the broadcast
+# misreported a successful swap as "NO EFFECT"; chain/API lag varies).
+VERIFY_POLL_SECONDS = 30.0
 
 
 def execute_idle_deploy(agent, plan, allow_execute):
@@ -1032,6 +1054,12 @@ def execute_idle_deploy(agent, plan, allow_execute):
                                            "table": table,
                                            "query": query,
                                            "limit": limit}}, timeout=45).json()
+        # An RPC ERROR and an EMPTY TABLE are different outcomes; reading an
+        # error as [] read a successful swap as balance 0.0 and misreported
+        # "NO EFFECT" (Opus review N1, ledger 11-02 17:04). Errors raise.
+        if r.get("error") is not None:
+            raise RuntimeError(f"RPC error on {contract}.{table}: "
+                               f"{str(r.get('error'))[:200]}")
         return r.get("result") or []
 
     def _bal(sym):
@@ -1120,6 +1148,57 @@ def execute_idle_deploy(agent, plan, allow_execute):
                                keys={creds["account"]: creds["active"]})
     lp = LiquidityPool(blockchain_instance=hive)
 
+    # --- PRE-FLIGHT before ANY broadcast (Opus review N1) ---
+    # A pool with SWAP.HIVE on one side needs only ONE swap — the identity
+    # side IS the input token (single-leg deploy, Opus round 2). Identity
+    # sides are skipped everywhere below; only real swaps pre-flight.
+    _swap_sides = []
+    _missing = []
+    if base != IN:
+        _pair_b = _pair_for(IN, base)
+        if _pair_b:
+            _swap_sides.append(("base", base, _pair_b))
+        else:
+            _missing.append("base")
+    if quote != IN:
+        _pair_q = _pair_for(IN, quote)
+        if _pair_q:
+            _swap_sides.append(("quote", quote, _pair_q))
+        else:
+            _missing.append("quote")
+    if _missing:
+        plan["executed"] = False
+        plan["reason"] = (f"pre-flight: no {IN} pool for the "
+                          f"{'/'.join(_missing)} leg(s) — refusing before any "
+                          f"broadcast (no stranded tokens)")
+        _log({"action": "deploy_idle", "status": "pre-flight-refused",
+              "reason": plan["reason"], "live": True})
+        return plan
+    import lp_route_cost as _RC
+    for _side, _tok, _pair in _swap_sides:
+        try:
+            _rc = _RC.price_route([IN, _tok], leg_hive, IN,
+                                  getattr(agent, "pe", None).pools or {})
+            _cost = _rc.get("cost_pct") if _rc.get("ok") else None
+        except Exception:
+            _cost = None
+        if _cost is None or _cost > ROUTE_COST_REFUSAL_PCT:
+            plan["executed"] = False
+            plan["reason"] = (f"pre-flight: route {IN}->{_tok} "
+                              f"{'unpriced' if _cost is None else f'{_cost:.3f}%'} "
+                              f"vs {ROUTE_COST_REFUSAL_PCT}% ceiling — refusing "
+                              f"before any broadcast")
+            _log({"action": "deploy_idle", "status": "pre-flight-refused",
+                  "reason": plan["reason"], "live": True})
+            return plan
+    # THROTTLE MARKED BEFORE THE FIRST BROADCAST (Opus review N1): the PEPE
+    # loop (ledger 11-01/11-02) re-swapped hourly because the mark was written
+    # only on fully-verified success. From here on something may broadcast; a
+    # partial failure must wait out the interval, and the stranded-leg
+    # rebalance is a manual act.
+    _mark_idle_deploy()
+    _spent = 0.0   # HIVE actually consumed by swaps (identity sides spend 0)
+
     def _swap_leg(out_sym, leg_amount):
         """Swap leg_amount SWAP.HIVE -> out_sym via its pool, then
         VERIFY by fresh balance reads. Returns (ok, trx_id, note)."""
@@ -1162,29 +1241,46 @@ def execute_idle_deploy(agent, plan, allow_execute):
             trx_id = (res or {}).get("trx_id") if isinstance(res, dict) else None
         except Exception as e:
             return False, None, f"{type(e).__name__}: {e}"
-        _time.sleep(6)   # contract settle
-        # INDEPENDENT VERIFY: the output arrived AND the HIVE left
-        got = _bal(out_sym) - (pre_b if out_sym == base else
-                              pre_q if out_sym == quote else _bal(out_sym))
-        spent = _bal(IN)
-        # fresh pre for this leg = current hive before next reads
-        arrived = _bal(out_sym)
+        # INDEPENDENT VERIFY with a poll deadline (Opus review N1): a single
+        # read 6s after the broadcast misreported a SUCCESSFUL swap as
+        # "NO EFFECT" (ledger 11-02 17:04) — sidechain/API lag exceeds the
+        # settle sleep. Poll until the output arrives or the deadline passes;
+        # a failed READ is an error (raised by _find), not a zero.
         prev = plan["steps"][-1].get("post_bal", {}).get(out_sym) \
             if plan["steps"] else None
         baseline = prev if prev is not None else (
             pre_b if out_sym == base else pre_q)
-        delta_out = arrived - baseline
-        if delta_out <= 0:
-            return False, trx_id, (f"swap broadcast but NO EFFECT: "
-                                   f"{out_sym} delta {delta_out:.8f}")
+        _deadline = _time.time() + VERIFY_POLL_SECONDS
+        delta_out = None
+        while _time.time() < _deadline:
+            _time.sleep(4)
+            try:
+                delta_out = _bal(out_sym) - baseline
+            except Exception as _e:
+                return False, trx_id, (f"verify read failed: "
+                                       f"{type(_e).__name__}: {str(_e)[:120]}")
+            if delta_out > 0:
+                break
+        if delta_out is None or delta_out <= 0:
+            return False, trx_id, (f"swap broadcast but NO EFFECT after a "
+                                   f"{VERIFY_POLL_SECONDS:.0f}s poll: "
+                                   f"{out_sym} delta {delta_out}")
         return True, trx_id, {"arrived": round(delta_out, 8),
                               "per_hive": round(per_hive, 6)}
 
-    # leg 1: HIVE -> base
-    ok1, tx1, info1 = _swap_leg(base, leg_hive)
-    plan["steps"].append({"step": f"swap {leg_hive} {IN}->{base}",
-                          "ok": ok1, "trx_id": tx1,
-                          "info": info1})
+    # leg 1: HIVE -> base (SKIPPED when base IS the input token —
+    # single-leg deploy, Opus review round 2; its contribution is the
+    # budgeted share that was never swapped)
+    if base == IN:
+        ok1, tx1, info1 = True, None, {"note": f"base is {IN} — no swap needed"}
+        plan["steps"].append({"step": f"base is {IN} — no swap needed",
+                              "ok": True, "trx_id": None, "info": info1})
+    else:
+        ok1, tx1, info1 = _swap_leg(base, leg_hive)
+        _spent += leg_hive
+        plan["steps"].append({"step": f"swap {leg_hive} {IN}->{base}",
+                              "ok": ok1, "trx_id": tx1,
+                              "info": info1})
     _log({"action": "deploy_idle_leg", "leg": base, "ok": ok1,
           "trx_id": tx1, "info": info1, "live": True})
     if not ok1:
@@ -1208,10 +1304,17 @@ def execute_idle_deploy(agent, plan, allow_execute):
         _log({"action": "deploy_idle", "status": "leg2-underfunded",
               "post1": post1, "live": True})
         return plan
-    ok2, tx2, info2 = _swap_leg(quote, leg2_hive)
-    plan["steps"].append({"step": f"swap {leg2_hive} {IN}->{quote}",
-                          "ok": ok2, "trx_id": tx2,
-                          "info": info2})
+    # leg 2: HIVE -> quote (SKIPPED when quote IS the input token)
+    if quote == IN:
+        ok2, tx2, info2 = True, None, {"note": f"quote is {IN} — no swap needed"}
+        plan["steps"].append({"step": f"quote is {IN} — no swap needed",
+                              "ok": True, "trx_id": None, "info": info2})
+    else:
+        ok2, tx2, info2 = _swap_leg(quote, leg2_hive)
+        _spent += leg2_hive
+        plan["steps"].append({"step": f"swap {leg2_hive} {IN}->{quote}",
+                              "ok": ok2, "trx_id": tx2,
+                              "info": info2})
     _log({"action": "deploy_idle_leg", "leg": quote, "ok": ok2,
           "trx_id": tx2, "info": info2, "live": True})
     if not ok2:
@@ -1224,6 +1327,13 @@ def execute_idle_deploy(agent, plan, allow_execute):
     plan["steps"][-1]["post_bal"] = post2
     got_b = post2[base] - pre_b
     got_q = post2[quote] - pre_q
+    # identity sides (Opus round 2): the input token IS a pool side — its
+    # contribution is the budgeted share that was never swapped, NOT a
+    # balance delta (the delta reads NEGATIVE: the wallet only ever spent).
+    if base == IN:
+        got_b = budget_hive - _spent
+    if quote == IN:
+        got_q = budget_hive - _spent
     rb, rq = _ratio(dst) or (0, 0)
     r = (rb / rq) if rq else None    # base per quote
     if not r or got_b <= 0 or got_q <= 0:
