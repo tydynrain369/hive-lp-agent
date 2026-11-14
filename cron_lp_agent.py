@@ -991,9 +991,15 @@ def main():
         decision = None
 
     print("\n=== TEST EXECUTION (guarded; LP_TEST_LIVE env required for broadcast) ===")
+    _acted = False
     try:
         if decision is not None:
             actions = execute_from_decision(agent, decision)
+            # 2026-11-13 (Claude review P0-2): one action per run is a HARD
+            # invariant. If the exit leg broadcast, the executor subprocess
+            # below must NOT run — two capped removals in one tick is still
+            # two removals.
+            _acted = any(a.get("status") == "broadcast" for a in actions)
             if not actions:
                 print("  No exit action this round.")
             for a in actions:
@@ -1016,7 +1022,10 @@ def main():
         _rc_path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
             "lp_realloc_executor.py")
-        if _live and _rec:
+        if _live and _acted:
+            print("  [AUTONOMY] exit leg already broadcast this run — "
+                  "one action per run; executor subprocess skipped.")
+        elif _live and _rec:
             # 2026-10-17: the reallocation branch — an exit source
             # exists, run the proven Leg-A executor (remove+stage).
             print("  [AUTONOMY] reallocation recommended — invoking "

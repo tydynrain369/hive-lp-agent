@@ -513,6 +513,12 @@ def decide(held_pools: list, reward_info: dict, fee_evidence: Optional[dict] = N
                 f"{pool}: no authoritative APR supplied — fee yield UNKNOWN, "
                 f"not treated as zero; fallback figure ({fee_apr}%) is known to be "
                 f"7x-393x too low and was not used to drive this verdict")
+            # 2026-11-13 (Claude review P0-7): the note above was aspirational —
+            # the branches below still branched on the divergent figure (exit
+            # at <0.01, hold at >=MIN, consolidate in the else). UNKNOWN means
+            # the decision layer must not act on ANY number: fee_apr is None
+            # from here, and the branch chain handles None explicitly.
+            fee_apr = None
         # 2026-10-02: the reward metric is now USD VALUE, not an entry COUNT.
         #
         # The old code read r["token"]/r["symbol"], but discover_rewards()
@@ -730,7 +736,11 @@ def decide(held_pools: list, reward_info: dict, fee_evidence: Optional[dict] = N
             # "release this liquidity to a more productive pool". Register it
             # here, scored the same way the other branches score.
             if action == "expand":
-                score = (fee_apr * FEE_APR_SCORE_WEIGHT
+                # fee_apr may be None (UNKNOWN): in a RANKING score an unknown
+                # fee contributes zero — same convention as the None-safe
+                # reward_per_hive term below. Gating is separate and refuses.
+                score = ((fee_apr if fee_apr is not None else 0.0)
+                         * FEE_APR_SCORE_WEIGHT
                          + reward_count * REWARD_TOKEN_SCORE_WEIGHT)
                 # 2026-10-10: reward-per-HIVE term in the DUST-EXPAND branch
                 # too — this is the branch that actually fires in production
@@ -759,6 +769,16 @@ def decide(held_pools: list, reward_info: dict, fee_evidence: Optional[dict] = N
                 elif score > expand_score:
                     expand_score = score
                     expand_candidate = pool
+        elif fee_apr is None:
+            # 2026-11-13 (Claude review P0-6/P0-7): fee yield UNKNOWN — never
+            # exit and never release on an unmeasured figure. Hold; the reason
+            # names the gap for the morning review. A MEASURED ~0 APR still
+            # takes the exit branch below — None is not 0.
+            action = "hold"
+            reason = ("fee yield UNKNOWN (no authoritative APR; the measurement "
+                      "layer refused to fabricate one) — holding rather than "
+                      "acting on an unknown")
+            score = None
         elif fee_apr < 0.01 and not pays_something:
             action = "exit"
             reason = "no measurable fees AND no active reward distributions"
@@ -824,6 +844,17 @@ def decide(held_pools: list, reward_info: dict, fee_evidence: Optional[dict] = N
             elif fee_apr > expand_score:
                 expand_score = fee_apr
                 expand_candidate = pool
+        elif pays_something and dividend_status != "valued":
+            # 2026-11-13 (Claude review P0-8): rewards EXIST but could not be
+            # valued (unpriced token, no price map, split unavailable). The old
+            # fall-through read that as "weak on both axes" and emitted
+            # consolidate — a release instruction driven by a PRICING gap, not
+            # by the pool. Unvalued is unknown, not weak.
+            action = "hold"
+            reason = (f"rewards present ({reward_count} tokens) but dividend "
+                      f"unvalued ({dividend_status}) — not releasing on "
+                      f"unvalued rewards")
+            score = None
         else:
             action = "consolidate"
             reason = f"weak on both axes (fee_apr={fee_apr}%, rewards={reward_count})"

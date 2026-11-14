@@ -364,6 +364,18 @@ def _released_amounts(agent, src_pool, position_value_usd):
     return out
 
 
+def _floor8(x: float) -> float:
+    """Floor at 1e-8 — never round UP a broadcast amount.
+
+    2026-11-13 (Claude review P0-13): round() can nudge a leg above the
+    wallet balance and the contract refuses the whole tick (safe, but the
+    action is lost). Flooring makes the overflow impossible by construction —
+    same rule the sizing layer already follows.
+    """
+    import math
+    return math.floor(x * 1e8) / 1e8
+
+
 def _route_cost_check(agent, src_pool, dst_pool, released_amounts):
     """Price the conversion route and refuse above ROUTE_COST_REFUSAL_PCT.
 
@@ -382,35 +394,56 @@ def _route_cost_check(agent, src_pool, dst_pool, released_amounts):
     if not released_amounts:
         out["detail"] = "no released amounts to price"
         return out
+
+    # Which released tokens actually NEED converting? Decided first, so a plan
+    # whose released tokens are all destination tokens is never refused for a
+    # pricing outage it did not need. From here on, every remaining token
+    # NEEDS a priced route.
+    dest_tokens = [t for t in (dst_pool or "").split(":") if t]
+    needed = {tok: amt for tok, amt in released_amounts.items()
+              if tok not in dest_tokens and float(amt) > 0}
+    if not needed:
+        out["detail"] = "no released token requires a conversion route"
+        return out
+
+    # FAIL CLOSED (2026-11-13, Claude review P0-4): the old code `continue`d
+    # past every pricing failure — no path found, pricing exception, ok=False,
+    # no price engine — and waved the plan through as "not-priced", so a route
+    # that physically could not absorb the amount never met the 1% ceiling.
+    # A needed-but-unpriced conversion is a REFUSAL, never a pass.
     try:
         from lp_router import build_adjacency, find_general_path
         import lp_route_cost as RC
         pe = getattr(agent, "pe", None)
         if pe is None:
-            out["detail"] = "no price engine; cannot price the route"
+            out["status"] = "refused"
+            out["verdict"] = ("refusing: released capital requires conversion "
+                              "but there is no price engine to price the route")
             return out
         adj = build_adjacency(pe.pools or {})
     except Exception as e:
-        out["detail"] = f"{type(e).__name__}: {e}"
+        out["status"] = "refused"
+        out["verdict"] = (f"refusing: route pricing unavailable "
+                          f"({type(e).__name__}: {e})")
         return out
 
-    dest_tokens = [t for t in (dst_pool or "").split(":") if t]
     rows = []
+    failures = []
     worst = None
-    for tok, amt in released_amounts.items():
-        if tok in dest_tokens or float(amt) <= 0:
-            continue
+    for tok, amt in needed.items():
         path = (find_general_path(adj, tok, dest_tokens[0], max_hops=ROUTE_MAX_HOPS)
                 or find_general_path(adj, tok, dest_tokens[1], max_hops=ROUTE_MAX_HOPS)) \
                if dest_tokens else None
         if not path:
+            failures.append(f"no swap route {tok} -> {dest_tokens}")
             continue
         try:
             r = RC.price_route(path, str(amt), tok, pe.pools or {})
         except Exception as e:
-            out["detail"] = f"{type(e).__name__}: {e}"
+            failures.append(f"{tok}: {type(e).__name__}: {e}")
             continue
         if not r.get("ok"):
+            failures.append(f"{tok}: {r.get('failure') or 'pricing refused the route'}")
             continue
         row = {"token": tok, "amount": str(amt), "path": r["path"],
                "cost_pct": r["cost_pct"], "out_amount": r["amount_out"],
@@ -421,12 +454,19 @@ def _route_cost_check(agent, src_pool, dst_pool, released_amounts):
 
     out["paths"] = rows
     if worst is None:
-        out["detail"] = "no released token requires a conversion route"
+        out["status"] = "refused"
+        out["verdict"] = ("refusing: released capital requires conversion but "
+                          "no route could be priced — " + "; ".join(failures))
+        return out
+    if worst["cost_pct"] is None:
+        out["status"] = "refused"
+        out["verdict"] = (f"refusing: priced route returned no cost figure "
+                          f"for {worst['token']}")
         return out
     out["status"] = "priced"
     out["cost_pct"] = worst["cost_pct"]
     out["worst_leg"] = worst
-    if worst["cost_pct"] is not None and worst["cost_pct"] > ROUTE_COST_REFUSAL_PCT:
+    if worst["cost_pct"] > ROUTE_COST_REFUSAL_PCT:
         out["status"] = "refused"
         out["verdict"] = (
             f"refusing: converting {worst['token']} via "
@@ -1035,7 +1075,7 @@ def execute_idle_deploy(agent, plan, allow_execute):
         plan["executed"] = False
         plan["reason"] = f"budget_hive {budget_hive:.6f} too small"
         return plan
-    leg_hive = round(budget_hive / 2.0, 8)
+    leg_hive = _floor8(budget_hive / 2.0)
     plan["budget_hive"] = round(budget_hive, 8)
 
     from nectar import Hive
@@ -1063,9 +1103,27 @@ def execute_idle_deploy(agent, plan, allow_execute):
         # out-per-hive: whichever side is SWAP.HIVE is the input
         per_hive = (q / b) if pair.split(":")[0] == IN else (b / q)
         expect = leg_amount * per_hive
-        min_out = round(expect * 0.95, 8)
+        min_out = _floor8(expect * 0.95)
         if min_out <= 0:
             return False, None, "degenerate expected output"
+        # ROUTE-COST CEILING (2026-11-13, Claude review P0-5): Tydyn's 1%
+        # ceiling applies to the from-idle deploy too. The plan-stage spread
+        # check reads the ORDER BOOK; this swap actually crosses the AMM pool,
+        # so price the real route and refuse above the ceiling. Fail closed:
+        # an unpriceable leg never broadcasts.
+        try:
+            import lp_route_cost as _RC
+            _rc = _RC.price_route([IN, out_sym], leg_amount, IN,
+                                  getattr(agent, "pe", None).pools or {})
+            _cost = _rc.get("cost_pct") if _rc.get("ok") else None
+            if _cost is None or _cost > ROUTE_COST_REFUSAL_PCT:
+                return False, None, (
+                    f"route ceiling: {IN}->{out_sym} cost "
+                    f"{_cost if _cost is not None else 'unpriced'}% vs "
+                    f"{ROUTE_COST_REFUSAL_PCT}% ceiling")
+        except Exception as _e:
+            return False, None, (f"route ceiling check failed: "
+                                 f"{type(_e).__name__}: {_e}")
         try:
             res = lp.swap_tokens(account=ACCT, token_pair=pair,
                                  token_symbol=IN,
@@ -1111,7 +1169,7 @@ def execute_idle_deploy(agent, plan, allow_execute):
     # adapt to reality, not the plan, or it refuses honestly)
     post1 = {"hive": _bal(IN), base: _bal(base), quote: _bal(quote)}
     plan["steps"][-1]["post_bal"] = post1
-    leg2_hive = min(leg_hive, round(post1["hive"] * 0.98, 8))
+    leg2_hive = min(leg_hive, _floor8(post1["hive"] * 0.98))
     if leg2_hive * hive_px < IDLE_DEPLOY_MIN_USD / 2:
         plan["executed"] = False
         plan["reason"] = (f"base leg double-spent the budget (remaining "
@@ -1156,11 +1214,11 @@ def execute_idle_deploy(agent, plan, allow_execute):
 
     from lp_executor_test import TestExecutor
     entry = TestExecutor(agent).add_liquidity(
-        dst, round(add_b, 8), round(add_q, 8), est_usd,
+        dst, _floor8(add_b), _floor8(add_q), est_usd,
         reason="autonomous from-idle deploy (verified legs)")
     plan["steps"].append({"step": f"add_liquidity {dst}",
-                          "base_amt": round(add_b, 8),
-                          "quote_amt": round(add_q, 8),
+                          "base_amt": _floor8(add_b),
+                          "quote_amt": _floor8(add_q),
                           "ok": entry.get("status") == "broadcast",
                           "entry": entry})
     _log({"action": "deploy_idle_add", "entry": entry, "live": True})

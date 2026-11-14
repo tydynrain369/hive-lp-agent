@@ -388,7 +388,13 @@ def generate_recommendation(held_pools, reward_discovery, position_lookup=None,
     """
     verdicts = {}
     for p in held_pools:
-        fee = measure_fee_apr(p) or {"fee_apr_pct": 0.0, "window_h": 0}
+        # 2026-11-13 (Claude review P0-6): None is the "unmeasurable" signal.
+        # Coercing it to 0.0 defeated the cron's `is not None` filter and fed a
+        # fabricated authoritative 0.0 into decide(), making the decision
+        # layer's fail-closed branch dead on the live path. None is not zero.
+        fee = measure_fee_apr(p)
+        if fee is None:
+            fee = {"fee_apr_pct": None, "window_h": None}
         rew = summarize_rewards(reward_discovery.get(p))
         v = {
             "pool": p,

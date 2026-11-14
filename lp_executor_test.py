@@ -6,8 +6,11 @@ Design rules:
   - Dry-run is the DEFAULT; real broadcast requires LP_TEST_LIVE=1 in env
   - Every action (dry or live) appended to test_executions.jsonl with
     pre-state, action, and result for forensic replay
-  - NEVER calls liquidity_agent_v2.execute_reallocation (that legacy path
-    is unbounded and stays untouched)
+  - 2026-11-13 (Claude review P0-12): liquidity_agent_v2.execute_reallocation
+    and the whole legacy ReallocationPlanner were DELETED (ungated, and it
+    passed absolute shares where the contract wants a percentage). Nothing
+    may resurrect them; any new broadcast path must go through live_armed()
+    + the cap + broadcast_once_hive.
 
 Actions supported:
   * remove_liquidity(pool, shares)   — partial or full exit
@@ -70,6 +73,14 @@ class TestExecutor:
         if held <= 0:
             return self._record(pool, "remove_liquidity", 0, "skipped",
                                 "no position held", reason)
+        if value <= 0:
+            # 2026-11-13 (Claude review P0-11): an unknown (None→0.0) value made
+            # req_value 0, which never exceeds the cap — so the shares sailed
+            # through UNCAPPED. None is not 0: with an unbounded value the cap
+            # cannot be computed and the only safe verdict is skip.
+            return self._record(pool, "remove_liquidity", 0, "skipped",
+                                "position value unknown/zero — cap not "
+                                "computable, refusing (None is not 0)", reason)
         # proportional cap: if full position is worth <= cap, we can exit all
         # requested shares (tests are on tiny positions anyway).
         req_value = value * min(1.0, shares / held)
@@ -86,6 +97,17 @@ class TestExecutor:
             return self._record(pool, "remove_liquidity", shares, "dry-run",
                                 f"would remove {shares} shares (~${req_value:.4f})",
                                 reason, pre)
+
+        # HARD CHOKEPOINT (2026-11-13, Claude review P0-1): env alone is not
+        # consent. Every live broadcast requires the same two-key arming as
+        # ExecutionEngine (LP_TEST_LIVE=1 AND the AUTONOMY_ON flag file) —
+        # fa272aa gated the executor-subprocess path; this closes the direct
+        # `LP_TEST_LIVE=1 python cron_lp_agent.py` bypass.
+        from liquidity_agent_v2 import live_armed
+        _armed, _why = live_armed()
+        if not _armed:
+            return self._record(pool, "remove_liquidity", shares, "skipped",
+                                f"live not armed: {_why}", reason, pre)
 
         # LIVE broadcast via nectarengine.
         # IMPORTANT (Hive-Engine contract): marketpools.removeLiquidity expects
@@ -104,11 +126,15 @@ class TestExecutor:
                 return self._record(pool, "remove_liquidity", 0, "skipped",
                                     "computed pct<=0", reason, pre)
 
-            from nectar import Hive
             from nectarengine.pool import LiquidityPool
             from liquidity_agent_v2 import HIVE_RPC, VAULT_PATH
+            from lp_broadcast_guard import broadcast_once_hive
             acct = json.load(open(VAULT_PATH))
-            hive = Hive(node=[HIVE_RPC], keys={acct["account"]: acct["active"]})
+            # BROADCAST-ONCE (Claude review P1-1): this instance's ONLY traffic
+            # is the signed broadcast — never auto-retry and re-send the same
+            # transaction on an RPC hiccup (ops #222/#223 class).
+            hive = broadcast_once_hive(node=[HIVE_RPC],
+                                       keys={acct["account"]: acct["active"]})
             lp = LiquidityPool(blockchain_instance=hive)
 
             result = lp.remove_liquidity(acct["account"], pool, pct)
@@ -131,12 +157,23 @@ class TestExecutor:
             return self._record(pool, "add_liquidity", est_usd, "dry-run",
                                 f"would add {amt_a} {base} + {amt_b} {quote}",
                                 reason, pre)
+        # HARD CHOKEPOINT (2026-11-13, Claude review P0-1): same two-key arming
+        # as remove_liquidity — env AND the AUTONOMY_ON flag file.
+        from liquidity_agent_v2 import live_armed
+        _armed, _why = live_armed()
+        if not _armed:
+            return self._record(pool, "add_liquidity", est_usd, "skipped",
+                                f"live not armed: {_why}", reason, pre)
         try:
-            from nectar import Hive
             from nectarengine.pool import LiquidityPool
             from liquidity_agent_v2 import HIVE_RPC, VAULT_PATH
+            from lp_broadcast_guard import broadcast_once_hive
             acct = json.load(open(VAULT_PATH))
-            hive = Hive(node=[HIVE_RPC], keys={acct["account"]: acct["active"]})
+            # BROADCAST-ONCE (Claude review P1-1): this instance's ONLY traffic
+            # is the signed broadcast — never auto-retry and re-send the same
+            # transaction on an RPC hiccup (ops #222/#223 class).
+            hive = broadcast_once_hive(node=[HIVE_RPC],
+                                       keys={acct["account"]: acct["active"]})
             lp = LiquidityPool(blockchain_instance=hive)
             result = lp.add_liquidity(acct["account"], pool, amt_a, amt_b,
                                       max_deviation=1)

@@ -34,6 +34,17 @@
 # layer stays informational. Flipping OFF requires no jobs.json surgery.
 set -euo pipefail
 
+# --- RUN LOCK (2026-11-13, Claude review P1-4) ---------------------------
+# One run at a time: an overrunning hour or a scheduler retry must never
+# overlap another run (double-remove / double-deploy). Non-blocking: a
+# second invocation exits 0 — a healthy skip, not a cron failure.
+mkdir -p "$HOME/.hermes/lp_tests"
+exec 9>"$HOME/.hermes/lp_tests/lp-agent.lock"
+if ! flock -n 9; then
+    echo "[lp-agent] another run holds the lock — skipping this tick"
+    exit 0
+fi
+
 PROJECT_VENV="/mnt/Arch-Linux-Share/AgentOS/repos/hive-agent-test/.venv"
 LP_SCRIPT="/home/tydynrain/.hermes/scripts/cron_lp_agent.py"
 AUTONOMY_FLAG="$HOME/.hermes/lp_tests/AUTONOMY_ON"
