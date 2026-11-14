@@ -759,8 +759,11 @@ def decide(held_pools: list, reward_info: dict, fee_evidence: Optional[dict] = N
                     # the old rph/HIVE_USD*100 (which treated APR as a daily
                     # rate) understated the term 365x, making the honest TVL
                     # fix alone look "still fee-dominant" when it was really
-                    # a second unit bug.
-                    _rph_apr_equiv = (_reward_per_hive * 365.0 / HIVE_USD_ASSUMED) * 100.0
+                    # a second unit bug. 2026-11-14 (Fable round 5): prefer
+                    # the REAL HIVE price; the constant only as last resort.
+                    _hive_px = ((price_map or {}).get("SWAP.HIVE")
+                                or HIVE_USD_ASSUMED)
+                    _rph_apr_equiv = (_reward_per_hive * 365.0 / _hive_px) * 100.0
                     score += (_rph_apr_equiv * REWARD_PER_HIVE_WEIGHT
                               * FEE_APR_SCORE_WEIGHT)
                 score *= _viability_factor(th)
@@ -806,7 +809,13 @@ def decide(held_pools: list, reward_info: dict, fee_evidence: Optional[dict] = N
             # None (no TVL or unpriced rewards) contributes zero — the
             # pre-2026-10-10 score — never a fabricated number.
             if _reward_per_hive is not None and REWARD_PER_HIVE_WEIGHT > 0:
-                _rph_apr_equiv = (_reward_per_hive * 365.0 / HIVE_USD_ASSUMED) * 100.0
+                # 2026-11-14 (Fable round 5): the constant was used even when
+                # the REAL price was known — a fixed $0.057 against a real
+                # $0.0427 inflates the term ~33%. Real price when known;
+                # the documented constant only as last resort.
+                _hive_px = ((price_map or {}).get("SWAP.HIVE")
+                            or HIVE_USD_ASSUMED)
+                _rph_apr_equiv = (_reward_per_hive * 365.0 / _hive_px) * 100.0
                 score += (_rph_apr_equiv * REWARD_PER_HIVE_WEIGHT
                           * FEE_APR_SCORE_WEIGHT)
             score *= _viability_factor(th)

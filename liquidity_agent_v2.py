@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 from urllib.request import Request, urlopen
 
+from lp_route_cost import SWAP_FEE   # ONE fee constant (0.25%); no cycle
+
 logging.basicConfig(level=logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.ERROR)
 
@@ -120,7 +122,7 @@ OUR_POOL_FEES = {
 }
 
 # ─── RPC Helper ──────────────────────────────────────────────────────
-def he(method: str, params: dict) -> list:
+def he(method: str, params: dict):
     """HE contract call with PAGINATION + read-retry.
 
     2026-11-13 (Opus P1-11, round 3): a single limit-1000 page silently
@@ -129,14 +131,20 @@ def he(method: str, params: dict) -> list:
     are side-effect free, so retrying transient failures is safe; broadcasts
     NEVER go through here (they use broadcast_once_hive, which must not
     retry).
+
+    2026-11-14 (Fable round 5, LIVE INCIDENT): ONLY list-table 'find'
+    paginates. findOne/getContract return DICTS — the old path did
+    rows.extend(dict), which appends the dict's KEYS, handing every dict
+    caller a list of strings that crashed on .get(). That took the 23:00
+    tick down at cron_lp_agent's first findOne. Non-'find' results are
+    returned untouched; a 'find' that somehow yields a non-list is also
+    returned untouched rather than exploded into keys.
     """
-    payload = {"jsonrpc": "2.0", "method": method, "params": params, "id": 1}
-    page_limit = int(params.get("limit", 1000) or 1000)
-    rows: list = []
-    offset = 0
-    while True:
-        params["offset"] = offset
-        data = json.dumps(payload).encode()
+    payload = {"jsonrpc": "2.0", "method": method,
+               "params": dict(params), "id": 1}
+
+    def _call(p):
+        data = json.dumps(p).encode()
         resp = None
         last_err = None
         for attempt in range(3):
@@ -153,7 +161,19 @@ def he(method: str, params: dict) -> list:
             raise RuntimeError(f"HE RPC failed after 3 attempts: {last_err}")
         if "error" in resp:
             raise RuntimeError(f"RPC error: {resp['error']}")
+        return resp
+
+    if method != "find":
+        return _call(payload).get("result") or {}
+    page_limit = int(params.get("limit", 1000) or 1000)
+    rows: list = []
+    offset = 0
+    while True:
+        payload["params"]["offset"] = offset
+        resp = _call(payload)
         page = resp.get("result", []) or []
+        if not isinstance(page, list):
+            return page          # contract changed shape: never explode keys
         rows.extend(page)
         if len(page) < page_limit:
             return rows
@@ -572,7 +592,10 @@ class PriceEngine:
                                        + _pool.quote_reserve * _q_usd)
                 _pool.volume_24h = (_pool.base_volume * _b_usd
                                     + _pool.quote_volume * _q_usd)
-                _pool.fees_24h = _pool.volume_24h * 0.003
+                # 2026-11-14 (Fable round 5): this second pass still hardcoded
+                # the pre-fee-fix 0.003, overwriting the SWAP_FEE (0.25%)
+                # first-pass value for every priced pool. One fee constant.
+                _pool.fees_24h = _pool.volume_24h * SWAP_FEE
                 _pool.apr = ((_pool.fees_24h / _pool.liquidity_usd)
                              * 365 * 100) if _pool.liquidity_usd > 0 else 0.0
                 _fixed += 1

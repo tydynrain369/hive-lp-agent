@@ -12,9 +12,12 @@ revert:
 
 Run:  bare `pytest` from ~/.hermes/scripts (testpaths pinned by pytest.ini).
 """
+import io
+import json
 import os
 import sys
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, "/home/tydynrain/.hermes/scripts")
 
@@ -195,6 +198,73 @@ class TestRecommendationNoneAprNoCrash(unittest.TestCase):
 
 
 # ─── P0-6/P0-7: UNKNOWN APR holds, never exits ───────────────────────
+class TestHeTransportFidelity(unittest.TestCase):
+    """Fable round 5 (live incident): round 3's pagination rewrite extended a
+    list with findOne's DICT result — appending its KEYS — so every dict
+    caller received a list of strings and the 23:00 tick crashed on .get().
+    The suite missed it because every test patched he() at the consumer.
+    These tests drive the REAL he() through a fake transport."""
+
+    def _fake_urlopen(self, responses, captured):
+        import liquidity_agent_v2 as LAV2
+        calls = {"i": 0}
+
+        def fake(req, timeout=None):
+            body = json.loads(req.data.decode())
+            captured.append(body)
+            resp = responses[min(calls["i"], len(responses) - 1)]
+            calls["i"] += 1
+            return io.BytesIO(json.dumps(resp).encode())
+        return LAV2, fake
+
+    def test_findone_returns_a_dict_not_a_list_of_keys(self):
+        import liquidity_agent_v2 as LAV2
+        captured = []
+        LAV2, fake = self._fake_urlopen(
+            [{"result": {"distTickHours": 1, "tokenPair": "X:Y"}}], captured)
+        with patch.object(LAV2, "urlopen", fake):
+            out = LAV2.he("findOne", {"contract": "distribution",
+                                      "table": "params", "query": {}})
+        self.assertIsInstance(out, dict)
+        self.assertEqual(out.get("distTickHours"), 1)
+        # and the caller's params dict must not be mutated with an offset
+        self.assertNotIn("offset", {"contract": "distribution",
+                                    "table": "params", "query": {}})
+
+    def test_getcontract_returns_a_dict(self):
+        import liquidity_agent_v2 as LAV2
+        captured = []
+        LAV2, fake = self._fake_urlopen(
+            [{"result": {"tables": ["tokens", "pools"]}}], captured)
+        with patch.object(LAV2, "urlopen", fake):
+            out = LAV2.he("getContract", {"name": "marketpools"})
+        self.assertIsInstance(out, dict)
+        self.assertIn("pools", out["tables"])
+
+    def test_find_still_paginates_until_a_short_page(self):
+        import liquidity_agent_v2 as LAV2
+        captured = []
+        page = [{"i": n} for n in range(3)]
+        # page_limit is 3: first page full, second page short -> 2 calls
+        LAV2, fake = self._fake_urlopen(
+            [{"result": list(page)},
+             {"result": [{"i": 99}]}], captured)
+        with patch.object(LAV2, "urlopen", fake):
+            out = LAV2.he("find", {"contract": "c", "table": "t",
+                                   "query": {}, "limit": 3})
+        self.assertEqual(len(out), 4)
+        self.assertEqual([b["params"]["offset"] for b in captured], [0, 3])
+
+    def test_find_with_non_list_result_is_returned_untouched(self):
+        import liquidity_agent_v2 as LAV2
+        captured = []
+        LAV2, fake = self._fake_urlopen([{"result": {"weird": True}}], captured)
+        with patch.object(LAV2, "urlopen", fake):
+            out = LAV2.he("find", {"contract": "c", "table": "t",
+                                   "query": {}, "limit": 3})
+        self.assertEqual(out, {"weird": True})
+
+
 class TestUnknownAprHolds(unittest.TestCase):
 
     def test_unmeasured_apr_holds_and_never_exits(self):
