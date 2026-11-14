@@ -168,8 +168,10 @@ class TestExecutor:
                                     "no position held (recheck)", reason, pre)
 
             pct = (shares / held) * 100.0
-            # max 3 decimal places
-            pct = round(pct, 3)
+            # max 3 decimal places — FLOOR, never round up (P1-10, Opus
+            # round 3): round() can nudge a removal past the cap.
+            import math as _m
+            pct = _m.floor(pct * 1000) / 1000
             if pct <= 0:
                 return self._record(pool, "remove_liquidity", 0, "skipped",
                                     "computed pct<=0", reason, pre)

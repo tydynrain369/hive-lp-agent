@@ -14,22 +14,29 @@ class PriceTests(unittest.TestCase):
             return rows if params['table']=='pools' else [{'symbol':'A','precision':2}]
         with patch.object(m,'he',side_effect=rpc): pe.load_all()
         return pe
-    def test_hive_price_from_pool_and_seeded_majors(self):
+    def test_hive_price_from_pool_and_derived_majors(self):
         # 2026-10-22 re-pin: the anchor architecture is deliberate (the
         # 2026-10-17 units fix builds on it). With the HIVE:HBD pool
-        # present, HIVE is POOL-derived; wrapped majors keep their
-        # documented seed anchors rather than deriving from fixture pools.
+        # present, HIVE is POOL-derived. 2026-11-13 (Opus P0-10) UPDATE:
+        # the wrapped-major SEED anchors are GONE — a stale constant
+        # (BTC at $65k) is how a pricing gap becomes a wrong number.
+        # Majors now price only from real pool routes: the fixture's
+        # SWAP.BTC:SWAP.HIVE pool derives BTC as 200 HIVE = $10.
         pe=self.engine([pool('SWAP.HIVE:SWAP.HBD',100,5),pool('SWAP.BTC:SWAP.HIVE',1,200)])
         self.assertAlmostEqual(pe.token_prices['SWAP.HIVE'],0.05)
-        self.assertAlmostEqual(pe.token_prices['SWAP.BTC'],65000)
-    def test_missing_market_falls_back_to_documented_anchor(self):
-        # 2026-10-22 re-pin: no pools -> the documented $0.05 HIVE fallback
-        # anchor applies (valuation approximation, commented in the engine),
-        # and NO other token is invented beyond the documented seed set.
+        self.assertAlmostEqual(pe.token_prices['SWAP.BTC'],10.0)
+    def test_missing_anchor_refuses_to_fabricate(self):
+        # 2026-11-13 (Opus P0-10) re-pin: no anchor pool -> HIVE is UNKNOWN.
+        # The old $0.05 HIVE fallback and the whole stale major-seed set are
+        # GONE: only the HBD peg ($1.00, a real peg, not a guess) remains,
+        # and every other token prices from real pool routes or stays
+        # unpriced. A fabricated anchor is how a pricing gap becomes a
+        # wrong number; unknown is how it becomes a refusal.
         prices=self.engine([]).token_prices
-        self.assertEqual(prices['SWAP.HIVE'],0.05)
-        self.assertEqual(set(prices),{'SWAP.HIVE','HIVE','SWAP.HBD','HBD',
-                                      'SWAP.BTC','SWAP.ETH','SWAP.LTC','SWAP.DOGE'})
+        self.assertNotIn('SWAP.HIVE', prices)
+        self.assertNotIn('HIVE', prices)
+        self.assertNotIn('SWAP.BTC', prices)
+        self.assertEqual(set(prices),{'SWAP.HBD','HBD'})
     def test_order_independent_deeper_known_side(self):
         rows=[pool('SWAP.HIVE:SWAP.HBD',100,5),pool('A:SWAP.HBD',100,1),pool('A:SWAP.HBD2',1,9),pool('SWAP.HBD2:SWAP.HBD',100,100)]
         a=self.engine(rows).token_prices; b=self.engine(list(reversed(rows))).token_prices

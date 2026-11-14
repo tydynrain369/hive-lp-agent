@@ -101,19 +101,40 @@ def _build_guard_context(agent, account: str) -> Dict:
     }
 
 
+MAX_DECISION_AGE_MINUTES = 90   # ~1.5 hourly ticks: older than this, the
+                                # decision no longer describes the chain
+
+
 def latest_decision():
     import glob
+    from datetime import datetime, timedelta
     files = sorted(glob.glob(f"{DECISION_DIR}/decision-*.json"))
     files = [f for f in files if "advisory" not in f]
     if not files:
         return None, None
     path = files[-1]
     with open(path) as fh:
-        return path, json.load(fh)
+        d = json.load(fh)
+    # P1-5 (Opus round 3): a STALE decision must not drive a live broadcast.
+    # written_at is embedded by write_decision; an unreadable/absent one is
+    # treated as stale — fail closed on missing evidence.
+    try:
+        written = datetime.fromisoformat(d.get("written_at"))
+        age = datetime.now() - written
+        if age > timedelta(minutes=MAX_DECISION_AGE_MINUTES):
+            print(f"decision {path} is stale "
+                  f"({age.total_seconds() / 60:.0f} min > "
+                  f"{MAX_DECISION_AGE_MINUTES}) — refusing to act on it")
+            return None, None
+    except (TypeError, ValueError):
+        print(f"decision {path} has no readable written_at — refusing")
+        return None, None
+    return path, d
 
 
-def latest_advisory(decision_path):
-    """Return the advisory verdict for this decision, or None if absent."""
+def latest_advisory(decision_path, decision=None):
+    """Return the advisory verdict for THIS decision, or None if absent or
+    bound to a different decision (P1-5, Opus round 3)."""
     if not decision_path:
         return None
     ap = decision_path.replace(".json", ".advisory.json")
@@ -121,9 +142,17 @@ def latest_advisory(decision_path):
         return None
     try:
         with open(ap) as fh:
-            return json.load(fh)
+            adv = json.load(fh)
     except Exception:
         return None
+    # a sidecar whose decision_id does not match belongs to a previous
+    # decision — it is not evidence for this one
+    did = (decision or {}).get("decision_id")
+    if did and adv.get("decision_id") != did:
+        print(f"advisory sidecar {ap} is bound to a different decision — "
+              f"ignoring it")
+        return None
+    return adv
 
 
 # Fraction of the source pool that must remain (held by OTHER LPs) for a route
@@ -362,6 +391,13 @@ def _released_amounts(agent, src_pool, position_value_usd):
     except Exception:
         return {}
     return out
+
+
+def _floor3(x: float) -> float:
+    """Floor at 3 decimals — the sharesOut percentage precision. Never round
+    a removal percentage UP past the cap (P1-10, Opus round 3)."""
+    import math
+    return math.floor(x * 1000) / 1000
 
 
 def _floor8(x: float) -> float:
@@ -650,7 +686,7 @@ def plan_reallocation(agent, decision, advisory=None, allow_challenge=False):
 
     # Percentage form required by the Hive-Engine contract: sharesOut is a
     # PERCENTAGE of the position (0-100, max 3dp), not an absolute count.
-    pct = round((capped_value / value) * 100.0, 3) if value else 0.0
+    pct = _floor3((capped_value / value) * 100.0) if value else 0.0
     if pct <= 0:
         return {"action": "none", "reason": "computed removal percentage is zero"}
 
@@ -720,7 +756,12 @@ def execute(agent, plan, allow_execute=False):
         # now. Removals are releases so the accumulation checks skip them,
         # but the staking-threshold check still applies — un-staking can drop
         # a global threshold below what LP depends on.
-        _acct = agent.acct["account"] if hasattr(agent, "acct") else "tydynrain"
+        # N6 (Opus round 3): never GUESS an account for a constraint check —
+        # use the module's own trading account. (The old fallback guessed
+        # "tydynrain", whose policy entries differ from the trading
+        # account's, so the gate evaluated the wrong account's constraints.)
+        from liquidity_agent_v2 import ACCOUNT as _LP_ACCOUNT
+        _acct = (getattr(agent, "acct", {}) or {}).get("account") or _LP_ACCOUNT
         _ctx = _build_guard_context(agent, _acct)
         _ok, _reason, _ = _enforce(
             "remove_liquidity", _acct, plan["from_pool"],
@@ -771,11 +812,23 @@ def main():
     from liquidity_agent_v2 import LiquidityAgent
 
     allow_execute = "--execute" in sys.argv
-    dpath, decision = latest_decision()
+    # P1-5 (Opus round 3): the cron passes the decision path it JUST wrote —
+    # no re-derivation, no chance of picking a different artifact than the
+    # one the decision/advisory steps ran on.
+    if "--decision" in sys.argv:
+        dpath = sys.argv[sys.argv.index("--decision") + 1]
+        try:
+            with open(dpath) as fh:
+                decision = json.load(fh)
+        except Exception as e:
+            print(f"decision artifact {dpath} unreadable: {e}")
+            return 2
+    else:
+        dpath, decision = latest_decision()
     if not decision:
         print("no decision artifact found")
         return 2
-    advisory = latest_advisory(dpath)
+    advisory = latest_advisory(dpath, decision)
 
     agent = LiquidityAgent()
     agent.pe.load_all()

@@ -136,6 +136,13 @@ def enforce_constraints(action: str, account: str, token: str, amount_usd: float
     Main enforcement entry point. HARD gate — every broadcast path must
     call this BEFORE constructing the contract payload.
 
+    2026-11-13 (Opus N6, honesty fix): HARD in STRUCTURE — it runs before
+    every payload and refuses on violated constraints — but POLICY-EMPTY
+    for an account with no ACCOUNT_CONSTRAINTS / ACCOUNT_RISK_BUDGETS
+    entry: an unknown account passes every check. That is a recorded
+    design decision (the trading account's policy is the operator's to
+    define), not an enforced capital bound; do not cite this gate as one.
+
     Args:
         action: 'add_liquidity', 'remove_liquidity', 'stake', 'unstake'
         account: target account
@@ -168,12 +175,15 @@ def enforce_constraints(action: str, account: str, token: str, amount_usd: float
     # 1. GLOBAL STAKING THRESHOLDS (cross-account, HARD) — accumulation only
     if is_accumulation:
         staked_by_account = context.get("staked_balances", {})
-        staked_total: Dict[str, float] = defaultdict(float)
-        for _acct, _toks in staked_by_account.items():
-            for _tok, _amt in (_toks or {}).items():
-                staked_total[_tok] += float(_amt or 0.0)
         for tok in tokens:
-            ok, reason = check_global_staking(tok, staked_total)
+            # N6 (Opus round 3): pass THIS TOKEN's staked amount per account.
+            # The old code pre-aggregated a {token: total} dict and passed it
+            # into a parameter named staked_by_account, so sum(values())
+            # summed across TOKENS — every token's threshold was checked
+            # against the whole portfolio's stake instead of its own.
+            staked_for_tok = {a: float((d or {}).get(tok, 0.0) or 0.0)
+                              for a, d in staked_by_account.items()}
+            ok, reason = check_global_staking(tok, staked_for_tok)
             if not ok:
                 return False, reason, None
 
@@ -197,7 +207,11 @@ def enforce_constraints(action: str, account: str, token: str, amount_usd: float
 
     # 3. CROSS-ACCOUNT GLOBAL CAPS (per-token, across all accounts)
     if is_accumulation:
-        proposed_lp = {account: {token: amount_usd}}
+        # N6 (Opus round 3): the check reads proposed_lp as FLAT
+        # {token: usd} per its signature; the old call passed a nested
+        # {account: {...}} dict, so proposed_lp.get(token) always read 0
+        # and the cap could never fire.
+        proposed_lp = {token: amount_usd}
         current_lp_all = context.get("current_lp", {})
         global_caps = context.get("global_caps", {})
         for tok in tokens:

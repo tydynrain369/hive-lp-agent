@@ -57,29 +57,35 @@ ANCHOR = 0.05   # fixed HIVE/USD so assertions are exact and offline
 
 
 @contextmanager
-def _stub_market(row=None, find=None, anchor=ANCHOR):
-    """Patch BOTH network seams the code reads, then restore them.
+def _stub_market(row=None, find=None, anchor=ANCHOR, top_bid=10.0):
+    """Patch ALL network seams the code reads, then restore them.
 
-    Stub the module-level bindings (`M._find`, `M._hive_anchor_usd`) — NOT a
-    parameter slot — because that is how `market_price` and `enrich_price_map`
-    actually resolve them. Any test that does not stub these has reached the
-    network, which is the whole failure class this file now guards against.
+    Stub the module-level bindings (`M._find`, `M._hive_anchor_usd`, and —
+    since the 2026-11-13 thin-bid depth check — `M._top_bid_hive_value`) —
+    NOT a parameter slot — because that is how `market_price` and
+    `enrich_price_map` actually resolve them. Any test that does not stub
+    these has reached the network, which is the whole failure class this
+    file now guards against. Default top_bid is DEEP (10 HIVE) so every
+    pre-existing bid-basis expectation still holds.
     """
     real_find, real_anchor = M._find, M._hive_anchor_usd
+    real_top = M._top_bid_hive_value
     if find is not None:
         M._find = find
     elif row is not None:
         M._find = lambda sym, _r=row: [_r] if sym == _r["symbol"] else real_find(sym)
     M._hive_anchor_usd = lambda: anchor
+    M._top_bid_hive_value = (lambda sym, _v=top_bid: _v)
     try:
         yield
     finally:
-        M._find, M._hive_anchor_usd = real_find, real_anchor
+        M._find, M._hive_anchor_usd, M._top_bid_hive_value = (
+            real_find, real_anchor, real_top)
 
 
-def _synthetic(row, anchor=ANCHOR):
+def _synthetic(row, anchor=ANCHOR, top_bid=10.0):
     """Price a synthetic row hermetically — no network at all."""
-    with _stub_market(row=row, anchor=anchor):
+    with _stub_market(row=row, anchor=anchor, top_bid=top_bid):
         return M.market_price(row["symbol"])
 
 
@@ -343,6 +349,33 @@ class TestEnrich(unittest.TestCase):
             M.enrich_price_map(existing)
         self.assertEqual(existing[TIGHT["symbol"]], 0,
                          "input map must not be mutated")
+
+
+class TestThinTopBid(unittest.TestCase):
+    """P0-10 (Opus round 3, 2026-11-13): a one-unit bid used to set the price
+    for the WHOLE book — the exit price every valuation trusted. A top bid
+    worth less than MIN_BID_DEPTH_HIVE falls back to lastPrice with an honest
+    basis flag, exactly like the no-bid case."""
+
+    def test_thin_top_bid_falls_back_to_lastprice(self):
+        row = dict(TIGHT)
+        m = _synthetic(row, top_bid=0.01)
+        self.assertEqual(m["price_hive"], float(row["lastPrice"]))
+        self.assertIn("thin top bid", m["basis"])
+
+    def test_deep_top_bid_still_prices_on_the_bid(self):
+        row = dict(TIGHT)
+        m = _synthetic(row, top_bid=10.0)
+        self.assertEqual(m["price_hive"], float(row["highestBid"]))
+        self.assertIn("highestBid", m["basis"])
+
+    def test_unreadable_depth_is_unknown_not_thin(self):
+        # a failed probe (None) is NOT evidence of a thin book — the bid
+        # basis stays; unknown never downgrades a good price
+        row = dict(TIGHT)
+        m = _synthetic(row, top_bid=None)
+        self.assertEqual(m["price_hive"], float(row["highestBid"]))
+        self.assertIn("highestBid", m["basis"])
 
 
 class HermeticityTests(unittest.TestCase):

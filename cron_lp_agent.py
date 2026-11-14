@@ -25,7 +25,9 @@ REPORTS_DIR = os.path.join(os.path.dirname(__file__), "reports")
 # 2026-10-10: fallback HIVE price for the reward-per-HIVE term when the
 # price map lacks a SWAP.HIVE row (the engine normally prices it; this is
 # the belt-and-braces default). Named, not inline, per the standing rule.
-HIVE_USD_FALLBACK = 0.057
+# (HIVE_USD_FALLBACK removed 2026-11-13 — Opus P0-10: a fabricated anchor
+# price is how a pricing gap becomes a wrong number. Unknown means the
+# dependent term deactivates, never a made-up constant.)
 
 
 # ---- Reward Discovery (Progressive Liquidity Discovery) ----
@@ -915,7 +917,13 @@ def main():
         # PriceEngine pool data the decision already consumes — no extra
         # network cost. Pool TVL in HIVE = liquidity_usd / HIVE price.
         try:
-            _hive_usd_px = agent.pe.token_prices.get("SWAP.HIVE") or HIVE_USD_FALLBACK
+            # P0-10 (Opus round 3): no fabricated HIVE price. When the
+            # anchor pool is missing, token_prices carries no SWAP.HIVE and
+            # the reward-per-HIVE term deactivates (empty TVL map) instead
+            # of valuing TVL at a made-up rate.
+            _hive_usd_px = agent.pe.token_prices.get("SWAP.HIVE")
+            if _hive_usd_px is None:
+                print("  HIVE price UNKNOWN this tick — reward-per-HIVE term inactive")
             _tvl_map = {}
             for _pid, _pool in (agent.pe.pools or {}).items():
                 if _pool.liquidity_usd and _hive_usd_px:
@@ -967,8 +975,19 @@ def main():
 
             adv = lp_advisory.adjudicate(decision.to_dict(), rec_verdicts)
             sidecar = dpath.replace(".json", ".advisory.json")
-            with open(sidecar, "w") as fh:
+            # P1-5 (Opus round 3): the sidecar carries the decision_id from
+            # the written artifact, so the executor can verify it belongs to
+            # THIS decision. Atomic write, same discipline as the decision.
+            _d_written = {}
+            try:
+                with open(dpath) as _dfh:
+                    _d_written = json.load(_dfh)
+            except Exception:
+                _d_written = {}
+            _stmp = sidecar + ".tmp"
+            with open(_stmp, "w") as fh:
                 json.dump({
+                    "decision_id": _d_written.get("decision_id"),
                     "adjudicated_decision": dpath,
                     "verdict": adv.get("verdict"),
                     "reason": adv.get("reason"),
@@ -978,6 +997,7 @@ def main():
                     "possible_quantity_leak": adv.get("possible_quantity_leak"),
                     "authority": "ADVISORY ONLY — no effect on the decision",
                 }, fh, indent=2)
+            os.replace(_stmp, sidecar)
             flag = "  <-- REVIEW" if adv.get("verdict") == "CHALLENGE" else ""
             print(f"  ADVISORY: {adv.get('verdict')} ({adv.get('ms')}ms){flag}")
             if adv.get("verdict") == "CHALLENGE":
@@ -989,6 +1009,8 @@ def main():
     except Exception as e:
         print(f"  Decision step failed (non-fatal): {e}")
         decision = None
+        dpath = None   # P1-5: the spawn sites below must never see an
+                       # unbound or half-written decision path
 
     print("\n=== TEST EXECUTION (guarded; LP_TEST_LIVE env required for broadcast) ===")
     _acted = False
@@ -1037,8 +1059,12 @@ def main():
             # exists, run the proven Leg-A executor (remove+stage).
             print("  [AUTONOMY] reallocation recommended — invoking "
                   "the executor (capped, live):")
-            _r = _sp.run([_sys.executable, _rc_path, "--execute"],
-                         capture_output=True, text=True, timeout=600)
+            _argv = [_sys.executable, _rc_path, "--execute"]
+            if dpath:
+                # P1-5 (Opus round 3): the executor acts on the decision
+                # artifact THIS tick wrote — never a re-derived one.
+                _argv += ["--decision", dpath]
+            _r = _sp.run(_argv, capture_output=True, text=True, timeout=600)
             for _ln in (_r.stdout or "").splitlines():
                 print(f"    {_ln}")
             if _r.returncode != 0:
@@ -1056,10 +1082,11 @@ def main():
             # sizing all stack inside.
             print("  [AUTONOMY] expand verdict with idle capital — "
                   "invoking the from-idle deploy (capped, live):")
-            _r = _sp.run(
-                [_sys.executable, _rc_path,
-                 "--deploy-idle", "--execute"],
-                capture_output=True, text=True, timeout=600)
+            _argv = [_sys.executable, _rc_path,
+                     "--deploy-idle", "--execute"]
+            if dpath:
+                _argv += ["--decision", dpath]
+            _r = _sp.run(_argv, capture_output=True, text=True, timeout=600)
             for _ln in (_r.stdout or "").splitlines():
                 print(f"    {_ln}")
             if _r.returncode != 0:

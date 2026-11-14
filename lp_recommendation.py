@@ -287,8 +287,27 @@ def position_economics(position, pool, fee_info, entitlement, price_map,
     if measured:
         base_usd = (earned_base or 0.0) * (price_map.get(getattr(position, "base", ""), 0.0) or 0.0)
         quote_usd = (earned_quote or 0.0) * (price_map.get(getattr(position, "quote", ""), 0.0) or 0.0)
-        out["our_measured_fee_usd"] = base_usd + quote_usd
-        out["fee_evidence"] = "measured"
+        # N5 (Opus round 3): a MEASURED delta in a token we cannot price is
+        # UNKNOWN fee income, not zero. Valuing it at 0 understated fee_usd,
+        # inflating the growth multiple and driving "consolidate" — a
+        # release instruction from a PRICING gap. None = not computable;
+        # threshold_analysis already treats None that way.
+        _unpriced_earned = [
+            sym for sym, earned, px in
+            ((getattr(position, "base", ""), earned_base,
+              price_map.get(getattr(position, "base", ""))),
+             (getattr(position, "quote", ""), earned_quote,
+              price_map.get(getattr(position, "quote", ""))))
+            if (earned or 0.0) > 0 and not px
+        ]
+        if _unpriced_earned:
+            out["our_measured_fee_usd"] = None
+            out["fee_evidence"] = "measured-but-unpriced"
+            out["reason"] = (f"measured fee accrual in unpriced token(s) "
+                             f"{_unpriced_earned} — fee USD UNKNOWN, not zero")
+        else:
+            out["our_measured_fee_usd"] = base_usd + quote_usd
+            out["fee_evidence"] = "measured"
     else:
         out["fee_evidence"] = "unmeasured"
         out["reason"] = "no measured fee accrual for this position yet"

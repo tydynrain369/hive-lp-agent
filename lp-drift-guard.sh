@@ -62,11 +62,24 @@ PY="${LP_GUARD_PY:-/usr/bin/python3}"
 # command's, so a dead restore step used to hide behind a healthy lp-sync run and
 # the guard reported "coherent" over a broken tree. A watchdog that can report
 # success while a step failed is worse than no watchdog.
+
+# --- CHAIN AUDIT (P1-9, Opus round 3) ------------------------------------
+# Chain vs ledgers, read-only (no keys, no signing). Orphans or a total node
+# failure exit non-zero and fail the guard, so the cron's failure_deliver
+# reaches the human. Multi-node fallback lives inside lp_chain_audit.py.
+rc_audit=0
+python3 /home/tydynrain/.hermes/scripts/lp_chain_audit.py || rc_audit=$?
+if [ "$rc_audit" -ne 0 ]; then
+  echo "LP chain audit: ORPHANS or failure (rc=$rc_audit)"
+fi
+
 rc=0
 if [ "${rc_restore:-0}" -ne 0 ]; then
   rc="${rc_restore}"
 elif [ "${rc_sync:-0}" -ne 0 ]; then
   rc="${rc_sync}"
+elif [ "$rc_audit" -ne 0 ]; then
+  rc="$rc_audit"
 fi
 
 if [ "$rc" -ne 0 ]; then

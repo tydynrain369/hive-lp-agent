@@ -38,7 +38,15 @@ import sys
 import urllib.request
 from datetime import datetime
 
-NODE = "https://api.hive.blog"
+# P1-9 (Opus round 3): fall back across public nodes — a single node's
+# outage used to read as "ledger entry unbacked", a false alarm by
+# construction.
+NODES = [
+    "https://api.hive.blog",
+    "https://api.deathwing.me",
+    "https://hive-api.arcange.eu",
+]
+NODE = NODES[0]
 LP_DIR = os.path.expanduser("~/.hermes/lp_tests")
 REALLOC_LOG = os.path.join(LP_DIR, "reallocations.jsonl")
 EXEC_LOG = os.path.join(LP_DIR, "test_executions.jsonl")
@@ -58,10 +66,16 @@ FIRST_LEDGER_TS = "2026-10-03T18:02:06"  # UTC, matching entry 1's trx timestamp
 def rpc(method: str, params: dict, timeout: int = 45) -> dict:
     body = json.dumps({"jsonrpc": "2.0", "id": 1,
                        "method": method, "params": params}).encode()
-    req = urllib.request.Request(
-        NODE, data=body, headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read())
+    last_err = None
+    for node in NODES:
+        req = urllib.request.Request(
+            node, data=body, headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return json.loads(r.read())
+        except Exception as e:
+            last_err = e
+    raise RuntimeError(f"all Hive nodes failed ({len(NODES)} tried): {last_err}")
 
 
 def _op_parts(entry: dict):

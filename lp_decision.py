@@ -1087,8 +1087,31 @@ def write_decision(report: DecisionReport, out_dir: str = None) -> str:
     os.makedirs(out_dir, exist_ok=True)
     date_str = datetime.now().strftime("%Y%m%d")
     path = os.path.join(out_dir, f"decision-{date_str}.json")
-    with open(path, "w") as f:
-        json.dump(report.to_dict(), f, indent=2, default=str)
+    d = report.to_dict()
+    # P1-5 (Opus round 3): bind the artifact to its content and its write
+    # time. The advisory sidecar carries the same decision_id, so a sidecar
+    # from a PREVIOUS decision (the date-named files are overwritten hourly)
+    # can never be read as this decision's verdict — and a failed advisory
+    # write leaves NO sidecar, not last hour's. written_at lets the executor
+    # refuse to act on a stale decision.
+    import hashlib
+    _now = datetime.now().isoformat(timespec="seconds")
+    _core = json.dumps({p: (v.get("action"), v.get("reason"))
+                        for p, v in (d.get("verdicts") or {}).items()},
+                       sort_keys=True, default=str)
+    d["decision_id"] = hashlib.sha256((_core + _now).encode()).hexdigest()[:16]
+    d["written_at"] = _now
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(d, f, indent=2, default=str)
+    os.replace(tmp, path)   # atomic: a reader never sees a half-written file
+    # a stale sidecar from the previous hour must not survive this write
+    _side = path.replace(".json", ".advisory.json")
+    if os.path.exists(_side):
+        try:
+            os.remove(_side)
+        except OSError:
+            pass
     return path
 
 

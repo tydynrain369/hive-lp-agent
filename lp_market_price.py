@@ -82,6 +82,33 @@ SPREAD_WIDE = 0.50           # 10-50% : priceable, size down
 EXIT_LIQUIDITY_FLOOR_HIVE = 0.5
 
 
+MIN_BID_DEPTH_HIVE = 1.0   # a top bid worth less than this cannot back an
+                           # exit price for the whole book (P0-10, Opus round 3)
+
+
+def _top_bid_hive_value(symbol: str):
+    """HIVE value of the SINGLE best bid order. None on failure — unknown,
+    never zero (a failed probe is not an empty book)."""
+    import urllib.request
+    try:
+        body = json.dumps({"jsonrpc": "2.0", "method": "find", "id": 1,
+                           "params": {"contract": "market", "table": "buyBook",
+                                      "query": {"symbol": symbol},
+                                      "limit": 1}}).encode()
+        req = urllib.request.Request(HE_RPC, data=body,
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            resp = json.loads(r.read())
+        if "error" in resp:
+            return None
+        rows = resp.get("result") or []
+        if rows:
+            return float(rows[0].get("price", 0)) * float(rows[0].get("quantity", 0))
+    except Exception:
+        return None
+    return None
+
+
 def bid_depth_hive(symbol: str, limit: int = 1000):
     """Total HIVE value of a token's order-book bids: sum(price*qty over buyBook).
 
@@ -189,9 +216,18 @@ def market_price(symbol: str) -> Optional[dict]:
         if mid > 0:
             spread = (ask - bid) / mid
 
-    # A sale realises the bid, so price on the bid when one exists.
+    # A sale realises the bid, so price on the bid when one exists — AND when
+    # the top bid can actually absorb a sale (P0-10, Opus round 3: a one-unit
+    # bid used to set the price for the whole book). A thin top bid falls
+    # back to lastPrice with an honest basis flag.
     if has_bid:
-        price, basis = bid, "highestBid (exit price for a sale)"
+        _top = _top_bid_hive_value(symbol)
+        if _top is None or _top >= MIN_BID_DEPTH_HIVE:
+            price, basis = bid, "highestBid (exit price for a sale)"
+        else:
+            price, basis = lp_f, (
+                f"lastPrice (thin top bid: {_top:.2f} HIVE < "
+                f"{MIN_BID_DEPTH_HIVE} — not an exit price)")
     else:
         price, basis = lp_f, "lastPrice (NO BID — stale print, not an exit price)"
 

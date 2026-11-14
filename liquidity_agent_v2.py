@@ -121,13 +121,45 @@ OUR_POOL_FEES = {
 
 # ─── RPC Helper ──────────────────────────────────────────────────────
 def he(method: str, params: dict) -> list:
+    """HE contract call with PAGINATION + read-retry.
+
+    2026-11-13 (Opus P1-11, round 3): a single limit-1000 page silently
+    dropped every row beyond it — a truncated pool list is how released
+    amounts read empty and how a real pool vanishes from valuation. Reads
+    are side-effect free, so retrying transient failures is safe; broadcasts
+    NEVER go through here (they use broadcast_once_hive, which must not
+    retry).
+    """
     payload = {"jsonrpc": "2.0", "method": method, "params": params, "id": 1}
-    req = Request(HE_RPC, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"})
-    with urlopen(req, timeout=30) as r:
-        resp = json.load(r)
-    if "error" in resp:
-        raise RuntimeError(f"RPC error: {resp['error']}")
-    return resp.get("result", [])
+    page_limit = int(params.get("limit", 1000) or 1000)
+    rows: list = []
+    offset = 0
+    while True:
+        params["offset"] = offset
+        data = json.dumps(payload).encode()
+        resp = None
+        last_err = None
+        for attempt in range(3):
+            try:
+                req = Request(HE_RPC, data=data,
+                              headers={"Content-Type": "application/json"})
+                with urlopen(req, timeout=30) as r:
+                    resp = json.load(r)
+                break
+            except Exception as e:   # read-only: retry with backoff
+                last_err = e
+                time.sleep(1 + attempt)
+        if resp is None:
+            raise RuntimeError(f"HE RPC failed after 3 attempts: {last_err}")
+        if "error" in resp:
+            raise RuntimeError(f"RPC error: {resp['error']}")
+        page = resp.get("result", []) or []
+        rows.extend(page)
+        if len(page) < page_limit:
+            return rows
+        offset += len(page)
+        if offset > 100_000:   # hard stop: a table this big is a caller bug
+            raise RuntimeError(f"pagination exceeded 100k rows on {method}")
 
 # ─── Data Classes ────────────────────────────────────────────────────
 @dataclass
@@ -310,7 +342,15 @@ class PriceEngine:
                 quote_price_in_base = float(p.get("quotePrice", base_reserve / quote_reserve))
                 
                 volume = float(p.get("baseVolume", 0)) * base_price_in_quote + float(p.get("quoteVolume", 0)) * quote_price_in_base
-                fees = volume * 0.003
+                # 2026-11-13 (Opus N3/P1-13): ONE fee constant, the verified
+                # deployed value (tradeFeeMul=0.9975 = 0.25%). The old 0.3%
+                # here disagreed with lp_route_cost's 0.1% — three modules,
+                # three answers.
+                try:
+                    from lp_route_cost import SWAP_FEE as _SWAP_FEE
+                    fees = volume * float(_SWAP_FEE)
+                except Exception:
+                    fees = volume * 0.0025
                 
                 apr = 0.0
                 if volume > 0:
@@ -339,20 +379,27 @@ class PriceEngine:
         swap_hive_hbd = self.pools.get("SWAP.HIVE:SWAP.HBD")
         if swap_hive_hbd and swap_hive_hbd.base_price > 0:
             hive_usd = swap_hive_hbd.base_price * 1.0  # SWAP.HBD ≈ $1.00
+            print(f"  Price anchor: HIVE = ${hive_usd:.6f} (from SWAP.HIVE:SWAP.HBD pool)")
         else:
-            hive_usd = 0.05  # fallback
-        print(f"  Price anchor: HIVE = ${hive_usd:.6f} (from SWAP.HIVE:SWAP.HBD pool)")
+            # P0-10 (Opus round 3): a missing anchor pool means the chain
+            # read failed — REFUSE to price rather than fabricating $0.05.
+            # SWAP.HIVE/HIVE stay ABSENT from token_prices: every consumer
+            # treats an absent price as unknown (deploys refuse, valuations
+            # read unpriced) — never a fabricated anchor. The stale
+            # SWAP.BTC/ETH/LTC/DOGE constants are gone with it: those tokens
+            # now price only from real pool routes, else they are unpriced.
+            hive_usd = None
+            print("  Price anchor: SWAP.HIVE:SWAP.HBD pool MISSING — HIVE "
+                  "price UNKNOWN this tick (no fabricated fallback); "
+                  "price-dependent actions will refuse")
         
         anchors = {
-            "SWAP.HIVE": hive_usd,
-            "HIVE": hive_usd,
             "SWAP.HBD": 1.0,
             "HBD": 1.0,
-            "SWAP.BTC": 65000.0,
-            "SWAP.ETH": 3500.0,
-            "SWAP.LTC": 100.0,
-            "SWAP.DOGE": 0.15,
         }
+        if hive_usd is not None:
+            anchors["SWAP.HIVE"] = hive_usd
+            anchors["HIVE"] = hive_usd
         # Initialize with anchors
         for tok, price in anchors.items():
             if tok not in self.token_prices or self.token_prices[tok] == 0:
