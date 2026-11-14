@@ -22,6 +22,15 @@ import os
 # created after this line, which is every connection this tick makes.
 import socket
 socket.setdefaulttimeout(120)
+
+# 2026-11-14: WATCHDOG — a tick that hangs must self-identify and die, not
+# burn the cron's 3600s. After 20 minutes with no forward progress, dump
+# EVERY thread's stack to stderr (this exact log) and exit non-zero: the
+# stack names the call site for free, no ptrace needed. faulthandler's
+# timer runs on a watchdog thread and cancels on clean completion.
+import faulthandler
+import sys
+faulthandler.dump_traceback_later(20 * 60, exit=True)
 import json
 from datetime import datetime
 from decimal import Decimal

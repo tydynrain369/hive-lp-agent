@@ -163,14 +163,39 @@ def he(method: str, params: dict):
             raise RuntimeError(f"RPC error: {resp['error']}")
         return resp
 
+    # 2026-11-14 (live incident, round 5): the faulthandler watchdog caught
+    # he()'s own read hanging >20 minutes DESPITE urlopen(timeout=30) — an
+    # api.hive-engine.com node that accepts the connection and never answers
+    # (the "provider goes silent under load" pattern), and this ssl read path
+    # does not honor the socket timeout. Defense that CANNOT be ignored: run
+    # each call in a daemon thread and JOIN WITH A HARD CAP. A hung call
+    # abandons its thread (the watchdog kills the process at 20 min anyway)
+    # and raises like any other transient error — retries pick it up.
+    import threading
+    _CALL_TIMEOUT_S = 60.0
+
+    def _call_bounded(p):
+        box = {}
+        t = threading.Thread(target=lambda: box.setdefault("r", _call(p)),
+                             daemon=True)
+        t.start()
+        t.join(timeout=_CALL_TIMEOUT_S)
+        if t.is_alive():
+            raise RuntimeError(
+                f"HE RPC exceeded {_CALL_TIMEOUT_S:.0f}s (no response) "
+                f"— abandoned hung read")
+        if "r" not in box:
+            raise RuntimeError("HE RPC call failed before returning")
+        return box["r"]
+
     if method != "find":
-        return _call(payload).get("result") or {}
+        return _call_bounded(payload).get("result") or {}
     page_limit = int(params.get("limit", 1000) or 1000)
     rows: list = []
     offset = 0
     while True:
         payload["params"]["offset"] = offset
-        resp = _call(payload)
+        resp = _call_bounded(payload)
         page = resp.get("result", []) or []
         if not isinstance(page, list):
             return page          # contract changed shape: never explode keys
