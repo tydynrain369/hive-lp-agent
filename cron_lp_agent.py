@@ -490,15 +490,46 @@ def manage_positions(agent, reward_discovery):
     print("  Scanning positions for management actions...")
     rows = lp_pool_assessment.assess_pools(agent.pe, agent.portfolio,
                                            reward_discovery)
-    try:
-        report = lp_position_assessment.assess_positions(
-            he, agent.portfolio.account)
-    except Exception as e:
+    # 2026-11-14: WALL-TIME BUDGET for the landscape read. During an
+    # api.hive-engine.com black-hole window every he() call burns its 60s
+    # abandonment, and the assessment's internal pagination multiplies that
+    # past the tick's 20-min watchdog — killing the WHOLE tick and with it
+    # the decision, the advisory and the report. The budget caps the PHASE:
+    # past 6 minutes the read is abandoned, the phase fails closed (below),
+    # and the tick still produces a hold-decision from local data. A
+    # daemon-thread join is the same cannot-be-ignored pattern as he()'s
+    # 60s call cap (an ssl read against a black-holing peer honors no
+    # socket timeout).
+    import threading as _th
+    _ASSESSMENT_BUDGET_S = 360.0
+    _res = {}
+    def _assess():
+        try:
+            _res["r"] = lp_position_assessment.assess_positions(
+                he, agent.portfolio.account)
+        except Exception as _e:
+            _res["err"] = _e
+    _at = _th.Thread(target=_assess, daemon=True)
+    _at.start()
+    _at.join(timeout=_ASSESSMENT_BUDGET_S)
+    if _at.is_alive():
+        report = None
+        _assess_err = (f"landscape read exceeded "
+                       f"{_ASSESSMENT_BUDGET_S:.0f}s — abandoned "
+                       f"(HE node black-holing reads)")
+    elif "err" in _res:
+        report = None
+        _assess_err = str(_res["err"])
+    else:
+        report = _res.get("r")
+        _assess_err = None
+    if report is None:
         # Fail closed: an unreadable landscape is not permission to act.
+        _err = _assess_err or "landscape read failed"
         agent.position_assessment = {'decision': 'observe',
-                                     'error': str(e),
+                                     'error': str(_err),
                                      'transactions_submitted': 0}
-        print(f"  Position assessment failed — staying observe: {e}")
+        print(f"  Position assessment failed — staying observe: {_err}")
         return []
     agent.position_assessment = report
     # --- EVIDENCE PIPELINE (2026-11-03): lp_evidence was dormant.
