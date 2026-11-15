@@ -330,6 +330,33 @@ class TestHeNodeRotation(unittest.TestCase):
         self.assertEqual(len(calls), 1)          # no wasted call to the wedged primary
         self.assertIn("api2.hive-engine.com", calls[0])
 
+    def test_null_on_find_is_node_failure_not_an_empty_answer(self):
+        """A community mirror returned result:null for a find on a table the
+        official node serves (incomplete sync). A null on a FIND must be
+        treated as NODE FAILURE — rotate — never as 'no rows': a fabricated
+        empty would read as 'no pools' downstream."""
+        calls = []
+        LAV2 = self.LAV2
+        LAV2._HE_NODE_IDX[0] = 0
+        def fake(req, timeout=None):
+            calls.append(req.full_url)
+            if "api.hive-engine.com" in req.full_url:
+                return io.BytesIO(json.dumps(
+                    {"jsonrpc": "2.0", "id": 1, "result": None}).encode())
+            return io.BytesIO(json.dumps(
+                {"jsonrpc": "2.0", "id": 1,
+                 "result": [{"tokenPair": "A:B"}]}).encode())
+        with patch.object(LAV2, "urlopen", fake), \
+             patch.object(LAV2, "time") as tmod:
+            tmod.sleep = lambda s: None
+            out = LAV2.he("find", {"contract": "marketpools", "table": "metrics",
+                                   "query": {}, "limit": 10})
+        self.assertEqual(out, [{"tokenPair": "A:B"}])
+        self.assertIn("api.hive-engine.com", calls[0])
+        self.assertNotIn("api.hive-engine.com", calls[-1],
+                         "the null-serving node must not be the sticky one")
+        self.assertEqual(LAV2._HE_NODE_IDX[0], 1)
+
     def test_both_nodes_down_raises_bounded(self):
         LAV2 = self.LAV2
         def fake(req, timeout=None):

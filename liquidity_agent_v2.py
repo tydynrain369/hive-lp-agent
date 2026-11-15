@@ -22,13 +22,28 @@ HIVE_RPC = "https://api.deathwing.me"
 HE_RPC = "https://api.hive-engine.com/rpc/contracts"
 
 # 2026-11-14 (Tydyn's call): the primary HE endpoint black-holes reads for
-# hours at a stretch — api2.hive-engine.com is the OFFICIAL mirror and
-# answered a real contracts/find POST in 0.8s while the primary was wedged.
-# he() rotates: stick to the last node that answered, advance on failure,
-# persist the choice across ticks. Both entries verified with a REAL POST
-# (a TCP connect proves nothing — these edges tarpit non-browser-shaped
-# raw requests, so only the real client path is a valid health test).
-HE_NODES = ["https://api.hive-engine.com", "https://api2.hive-engine.com"]
+# hours at a stretch. Rotation ring, official endpoints FIRST (fully
+# compatible query surface), then the beacon-scored COMMUNITY nodes
+# (enginerpc, actifit, c0ff33a, atexoras, kanibot, dtools — all known,
+# trusted community operators; they live at /contracts, not /rpc/contracts,
+# and they 403 the default python UA, so every call carries an honest
+# agent User-Agent). Verified with REAL POSTs via the real client path:
+# a TCP connect proves nothing — these edges tarpit non-browser-shaped
+# raw requests. CAUTION encoded below: a community mirror returned
+# result:null for a find on a table the official node serves (incomplete
+# sync) — a null on a FIND is treated as NODE FAILURE (rotate), never as
+# an empty answer, because a fabricated empty would read as "no pools".
+HE_NODES = [
+    {"base": "https://api.hive-engine.com", "path": "/rpc/contracts"},
+    {"base": "https://api2.hive-engine.com", "path": "/rpc/contracts"},
+    {"base": "https://enginerpc.com", "path": "/contracts"},
+    {"base": "https://herpc.actifit.io", "path": "/contracts"},
+    {"base": "https://he.c0ff33a.uk", "path": "/contracts"},
+    {"base": "https://v6-he.atexoras.com:2083", "path": "/contracts"},
+    {"base": "https://herpc.kanibot.com", "path": "/contracts"},
+    {"base": "https://herpc.dtools.dev", "path": "/contracts"},
+]
+HE_USER_AGENT = "hive-lp-agent/2.1 (Hermes autonomous operator; contact: hive @tydynrain)"
 HE_NODE_STATE_PATH = os.path.expanduser("~/.hermes/lp_tests/he_node.json")
 
 
@@ -57,7 +72,7 @@ def _he_node_persist():
         tmp = HE_NODE_STATE_PATH + ".tmp"
         with open(tmp, "w") as fh:
             json.dump({"index": _HE_NODE_IDX[0],
-                       "node": HE_NODES[_HE_NODE_IDX[0]]}, fh)
+                       "node": HE_NODES[_HE_NODE_IDX[0]]["base"]}, fh)
         os.replace(tmp, HE_NODE_STATE_PATH)
     except Exception:
         pass   # memory is an optimization; rotation works without it
@@ -184,14 +199,15 @@ def he(method: str, params: dict):
     payload = {"jsonrpc": "2.0", "method": method,
                "params": dict(params), "id": 1}
 
-    def _call(base, p):
+    def _call(node, p):
         data = json.dumps(p).encode()
         resp = None
         last_err = None
         for attempt in range(3):
             try:
-                req = Request(base + "/rpc/contracts", data=data,
-                              headers={"Content-Type": "application/json"})
+                req = Request(node["base"] + node["path"], data=data,
+                              headers={"Content-Type": "application/json",
+                                       "User-Agent": HE_USER_AGENT})
                 with urlopen(req, timeout=30) as r:
                     resp = json.load(r)
                 break
@@ -215,10 +231,16 @@ def he(method: str, params: dict):
     import threading
     _CALL_TIMEOUT_S = 60.0
 
-    def _call_bounded(base, p):
+    def _call_bounded(node, p):
         box = {}
-        t = threading.Thread(target=lambda: box.setdefault("r", _call(base, p)),
-                             daemon=True)
+
+        def _run():
+            try:
+                box.setdefault("r", _call(node, p))
+            except Exception as _te:   # fast failure: surface it, don't leak
+                box.setdefault("err", _te)
+
+        t = threading.Thread(target=_run, daemon=True)
         t.start()
         t.join(timeout=_CALL_TIMEOUT_S)
         if t.is_alive():
@@ -229,38 +251,47 @@ def he(method: str, params: dict):
             raise RuntimeError("HE RPC call failed before returning")
         return box["r"]
 
-    def _rpc_rotated(p):
+    def _rpc_rotated(p, method):
         """One RPC against the sticky node; rotate to the next on failure.
 
         The 2026-11-14 black-hole windows are per-node: a wedged edge
         accepts TCP+TLS and never answers. Advance the sticky index and
-        try the next OFFICIAL endpoint; persist only on success. Worst
-        case (both nodes wedged) this raises after len(HE_NODES) bounded
-        tries — the caller's fail-closed path takes over.
+        try the next node in the ring (official pair first, then the
+        trusted community mirrors); persist only on success. A community
+        mirror returned result:null for a find on a table the official
+        node serves (incomplete sync) — for a FIND, a null result is
+        NODE FAILURE (rotate), never an empty answer: a fabricated empty
+        would read as "no pools" downstream. Worst case (all nodes
+        unusable) this raises after len(HE_NODES) bounded tries — the
+        caller's fail-closed path takes over.
         """
         last_err = None
         for _ in range(len(HE_NODES)):
-            base = HE_NODES[_HE_NODE_IDX[0]]
+            node = HE_NODES[_HE_NODE_IDX[0]]
             try:
-                resp = _call_bounded(base, p)
+                resp = _call_bounded(node, p)
+                result = resp.get("result") if isinstance(resp, dict) else None
+                if method == "find" and "result" in resp and result is None:
+                    raise RuntimeError("node returned null for a find "
+                                       "(incomplete mirror) — not an answer")
                 _he_node_persist()   # sticky: remember the node that answered
                 return resp
             except Exception as e:
                 last_err = e
                 logging.getLogger(__name__).warning(
                     "HE node %s failed (%s) — rotating to next",
-                    base, type(e).__name__)
+                    node["base"], type(e).__name__)
                 _he_node_rotate()
         raise last_err if last_err else RuntimeError("HE RPC: no nodes")
 
     if method != "find":
-        return _rpc_rotated(payload).get("result") or {}
+        return _rpc_rotated(payload, method).get("result") or {}
     page_limit = int(params.get("limit", 1000) or 1000)
     rows: list = []
     offset = 0
     while True:
         payload["params"]["offset"] = offset
-        resp = _rpc_rotated(payload)
+        resp = _rpc_rotated(payload, method)
         page = resp.get("result", []) or []
         if not isinstance(page, list):
             return page          # contract changed shape: never explode keys
