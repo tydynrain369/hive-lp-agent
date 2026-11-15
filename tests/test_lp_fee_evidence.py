@@ -10,6 +10,10 @@ BASE={'tokenPair':'AAA:BBB','baseSymbol':'AAA','quoteSymbol':'BBB',
       'baseQuantity':'1000','quoteQuantity':'2000','totalShares':'100',
       'baseVolume':'50','quoteVolume':'80','precision':8}
 
+# 2026-11-15 (Fable round 6): a None contract hash is FAIL-CLOSED
+# ('unverified-no-codehash') — mechanics tests present the known-good hash.
+GOOD_HASH = next(iter(KNOWN_CONTRACT_HASHES))
+
 def posr(shares): return {'shares':shares}
 
 def fake_rpc(pool=BASE,position=None,fail=False):
@@ -104,19 +108,32 @@ class DiffTests(unittest.TestCase):
         self.assertEqual(s.get('measurement_status'),'snapshot_recorded')
 
 class CollectTests(unittest.TestCase):
+    # 2026-11-15 (Fable round 6): a None contract hash is FAIL-CLOSED now
+    # ('unverified-no-codehash') — mechanics tests present the known-good
+    # hash, as the live cron does on a successful contract read.
+    GOOD_HASH = next(iter(KNOWN_CONTRACT_HASHES))
+
     def test_rpc_failure_unavailable_no_fabrication(self):
-        out=collect_fee_evidence(fake_rpc(fail=True),'alice',['AAA:BBB'],at_ms=1)
+        out=collect_fee_evidence(fake_rpc(fail=True),'alice',['AAA:BBB'],at_ms=1,
+                                 contract_hash=self.GOOD_HASH)
         e=out['AAA:BBB']
         self.assertEqual(e['status'],'unavailable')
         self.assertIn('reason',e)
         self.assertIsNone(e['share'])
     def test_collect_happy_path(self):
-        out=collect_fee_evidence(fake_rpc(position=posr('10')),'alice',['AAA:BBB'],at_ms=9)
+        out=collect_fee_evidence(fake_rpc(position=posr('10')),'alice',['AAA:BBB'],at_ms=9,
+                                 contract_hash=self.GOOD_HASH)
         e=out['AAA:BBB']
         self.assertEqual(e['account'],'alice')
         self.assertEqual(e['pool'],'AAA:BBB')
         self.assertEqual(e['measurement_status'],'snapshot_recorded')
         self.assertIsNotNone(e['snapshot'])
+    def test_missing_contract_hash_fails_closed(self):
+        """Round 6: the old None -> 'ok' was fail-open (a findOne null read
+        as a verified contract). Missing hash = unverified = snapshots skip."""
+        out=collect_fee_evidence(fake_rpc(position=posr('10')),'alice',['AAA:BBB'],
+                                 at_ms=9,contract_hash=None)
+        self.assertEqual(out['AAA:BBB']['status'],'unverified-no-codehash')
     def test_contract_hash_unverified(self):
         out=collect_fee_evidence(fake_rpc(position=posr('10')),'alice',['AAA:BBB'],
                                  at_ms=9,contract_hash='deadbeef'*8)
@@ -236,7 +253,8 @@ class RotationTests(unittest.TestCase):
         out=record_fee_snapshots(fake_rpc(pool=dict(BASE,baseQuantity='1100',
                                                     quoteQuantity='2100'),
                                           position=posr('25')),
-                                 'alice',['AAA:BBB'],store_path=p,at_ms=99)
+                                 'alice',['AAA:BBB'],store_path=p,at_ms=99,
+                                 contract_hash=GOOD_HASH)
         e=out['results']['AAA:BBB']
         self.assertEqual(e['status'],'measured',
                          'the retained prior row must still be found')
@@ -254,7 +272,8 @@ class RotationTests(unittest.TestCase):
         try:
             record_fee_snapshots(fake_rpc(position=posr('25')),'alice',
                                  ['AAA:BBB','CCC:DDD','EEE:FFF'],
-                                 store_path=p,at_ms=2)
+                                 store_path=p,at_ms=2,
+                                 contract_hash=GOOD_HASH)
         finally:
             F._read_snapshot_rows=real
         self.assertEqual(len(reads),1,
@@ -264,7 +283,8 @@ class RotationTests(unittest.TestCase):
         p=self._write([self._row('AAA:BBB','alice',1)])
         with open(p,'a') as f: f.write('garbage\n')
         out=record_fee_snapshots(fake_rpc(position=posr('25')),'alice',
-                                 ['AAA:BBB'],store_path=p,at_ms=2)
+                                 ['AAA:BBB'],store_path=p,at_ms=2,
+                                 contract_hash=GOOD_HASH)
         self.assertEqual(out.get('unparsable_lines_skipped'),1)
 
 if __name__=='__main__': unittest.main()

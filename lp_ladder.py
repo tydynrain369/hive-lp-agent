@@ -311,9 +311,20 @@ def next_deploy(rungs, capital_usd: float):
 # --------------------------------------------------------------------------
 # persisted fill state (cumulative deployed per rung, per epoch)
 # --------------------------------------------------------------------------
-def load_state(path: str = LADDER_STATE_PATH) -> dict:
+# 2026-11-15 (Fable round 6, CRITICAL): the path MUST NOT be a default
+# argument. `def load_state(path=LADDER_STATE_PATH)` binds the LIVE path at
+# definition time, so the test suite's conftest seal (setattr on the module)
+# changed nothing — every suite run wrote fixture deploys into the LIVE
+# ladder_state.json, and the 23:00 production decision consumed a fixture's
+# $0.80 as real deployed capital. Resolve at CALL time: the seal works, and
+# a caller that passes an explicit path still gets it.
+def _resolve(path):
+    return path if path is not None else LADDER_STATE_PATH
+
+
+def load_state(path: str | None = None) -> dict:
     try:
-        with open(path) as fh:
+        with open(_resolve(path)) as fh:
             return json.load(fh) or {}
     except (OSError, ValueError):
         return {}
@@ -326,9 +337,10 @@ def deployed_for(state: dict, pool: str) -> float:
         return 0.0
 
 
-def record_deploy(pool: str, amount_usd: float, path: str = LADDER_STATE_PATH) -> dict:
+def record_deploy(pool: str, amount_usd: float, path: str | None = None) -> dict:
     """Add a verified deploy to the rung's cumulative fill. Caller persists only
     on success; this function itself writes the file."""
+    path = _resolve(path)
     state = load_state(path)
     row = dict(state.get(pool) or {})
     row["deployed_usd"] = float(row.get("deployed_usd") or 0.0) + float(amount_usd or 0.0)
@@ -341,8 +353,8 @@ def record_deploy(pool: str, amount_usd: float, path: str = LADDER_STATE_PATH) -
     return state
 
 
-def reset_state(path: str = LADDER_STATE_PATH) -> None:
+def reset_state(path: str | None = None) -> None:
     try:
-        os.remove(path)
+        os.remove(_resolve(path))
     except OSError:
         pass

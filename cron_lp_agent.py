@@ -10,27 +10,36 @@ Hourly cron job that:
 """
 
 import os
+import time
 
-# 2026-11-14 (Fable round 5 follow-up, LIVE INCIDENT): the 00:19 read-only
-# tick and every overnight cron tick HUNG for their full timeout — an
-# un-timeouted socket to api.hive-engine.com (a library path neither he()
-# nor nectarengine's own 60s covers) sat in poll_schedule_timeout for 8h50m
-# with the peer never answering. A tick that cannot hang is a requirement:
-# bound EVERY socket created in this process. he() keeps its own 30s;
-# libraries with their own timeouts keep them; anything without one now
-# fails within 120s instead of stalling the hour. New sockets only —
-# created after this line, which is every connection this tick makes.
-import socket
-socket.setdefaulttimeout(120)
+# 2026-11-15 (Fable round 6, F5): the socket cap and the watchdog are set in
+# main(), NOT at module level. At module level they are IMPORT SIDE EFFECTS:
+# tests/conftest.py imports this module to seal REPORTS_DIR, which armed
+# every pytest process with a 20-minute hard exit, and lp_decision's lazy
+# `from cron_lp_agent import discover_rewards` armed any interactive user of
+# the decision layer the same way. A watchdog is a property of a RUN, not of
+# an import. (The defense itself stays — round 5's hang analysis stands;
+# Fable round 6 only moved WHERE it is armed.)
+_WATCHDOG_SECONDS = 20 * 60
+_TICK_T0 = None          # set in main(); anchors the budget arithmetic
+_TICK_DEGRADED = [False]  # landscape read failed this tick: no broadcasts
 
-# 2026-11-14: WATCHDOG — a tick that hangs must self-identify and die, not
-# burn the cron's 3600s. After 20 minutes with no forward progress, dump
-# EVERY thread's stack to stderr (this exact log) and exit non-zero: the
-# stack names the call site for free, no ptrace needed. faulthandler's
-# timer runs on a watchdog thread and cancels on clean completion.
-import faulthandler
-import sys
-faulthandler.dump_traceback_later(20 * 60, exit=True)
+
+def _subprocess_timeout(default=600):
+    """Executor subprocess timeout that fits INSIDE the watchdog budget.
+
+    2026-11-15 (Fable round 6, F4): a fixed 600s could overrun the 20-min
+    watchdog — the parent hard-exits mid-subprocess, the wrapper releases
+    the run lock, and an orphaned live executor overlaps the next tick.
+    The child gets what remains of the budget, minus a margin for the
+    parent's own teardown; never below 120s (a legitimate pre-flight
+    refusal still has time to print).
+    """
+    if _TICK_T0 is None:
+        return default
+    remaining = _WATCHDOG_SECONDS - (time.monotonic() - _TICK_T0)
+    return max(120, min(default, remaining - 180))
+
 import json
 from datetime import datetime
 from decimal import Decimal
@@ -516,7 +525,9 @@ def manage_positions(agent, reward_discovery):
         report = None
         _assess_err = (f"landscape read exceeded "
                        f"{_ASSESSMENT_BUDGET_S:.0f}s — abandoned "
-                       f"(HE node black-holing reads)")
+                       f"(node unreadable or path too slow; 2026-11-15: the "
+                       f"dominant historical cause was our own double-"
+                       f"pagination loop, fixed in round 6)")
     elif "err" in _res:
         report = None
         _assess_err = str(_res["err"])
@@ -529,7 +540,14 @@ def manage_positions(agent, reward_discovery):
         agent.position_assessment = {'decision': 'observe',
                                      'error': str(_err),
                                      'transactions_submitted': 0}
+        # 2026-11-15 (Fable round 6, F6): "staying observe" only governed the
+        # position phase — the 23:00 tick abandoned the landscape read and
+        # STILL issued expand + invoked the live from-idle deploy (only the
+        # $0.0005 idle floor stopped the broadcast). A degraded tick must not
+        # move capital: this flag is checked at the executor spawn sites.
+        _TICK_DEGRADED[0] = True
         print(f"  Position assessment failed — staying observe: {_err}")
+        print("  [DEGRADED] tick flagged: no executor broadcasts this tick.")
         return []
     agent.position_assessment = report
     # --- EVIDENCE PIPELINE (2026-11-03): lp_evidence was dormant.
@@ -772,6 +790,19 @@ def fee_snapshots_section(agent, extra_pairs=None):
 
 
 def main():
+    global _TICK_T0
+    _TICK_T0 = time.monotonic()
+    _TICK_DEGRADED[0] = False
+    # 2026-11-14: WATCHDOG — a tick that hangs must self-identify and die, not
+    # burn the cron's 3600s. After 20 minutes, dump EVERY thread's stack to
+    # stderr and exit non-zero: the stack names the call site for free.
+    # Armed HERE (Fable round 6, F5) — a property of the run, not the import.
+    import faulthandler
+    faulthandler.dump_traceback_later(_WATCHDOG_SECONDS, exit=True)
+    # 2026-11-14: bound EVERY socket this tick creates (he() keeps its own
+    # 30s; libraries with their own timeouts keep them). Also armed here.
+    import socket
+    socket.setdefaulttimeout(120)
     print("=== HERMES LP AGENT CRON RUN ===")
     print(f"Started: {datetime.now().isoformat()}")
 
@@ -1095,6 +1126,12 @@ def main():
         # $0.05 hard cap + route-cost ceiling + refusal gates all
         # stack inside it). Dry-run nights print the plan only.
         _live = os.environ.get("LP_TEST_LIVE", "") == "1"
+        if _live and _TICK_DEGRADED[0]:
+            # 2026-11-15 (Fable round 6, F6): a tick whose landscape read
+            # failed must not move capital — even on a valid decision
+            # artifact, the world-view behind it is stale.
+            print("  [DEGRADED] landscape read failed this tick — "
+                  "no executor broadcasts (capital stays put).")
         _rec = getattr(decision, "recommended_reallocation", None) \
             if decision is not None else None
         _exp = getattr(decision, "expand_candidate", None) \
@@ -1106,6 +1143,9 @@ def main():
         if _live and _acted:
             print("  [AUTONOMY] exit leg already broadcast this run — "
                   "one action per run; executor subprocess skipped.")
+        elif _live and _TICK_DEGRADED[0]:
+            # 2026-11-15 (Fable round 6, F6): degraded tick — no broadcasts.
+            pass   # the [DEGRADED] notice already printed above
         elif _live and _rec:
             # 2026-10-17: the reallocation branch — an exit source
             # exists, run the proven Leg-A executor (remove+stage).
@@ -1116,7 +1156,9 @@ def main():
                 # P1-5 (Opus round 3): the executor acts on the decision
                 # artifact THIS tick wrote — never a re-derived one.
                 _argv += ["--decision", dpath]
-            _r = _sp.run(_argv, capture_output=True, text=True, timeout=600)
+            # F4 (round 6): the child must finish INSIDE the watchdog budget.
+            _r = _sp.run(_argv, capture_output=True, text=True,
+                         timeout=_subprocess_timeout())
             for _ln in (_r.stdout or "").splitlines():
                 print(f"    {_ln}")
             if _r.returncode != 0:
@@ -1138,7 +1180,9 @@ def main():
                      "--deploy-idle", "--execute"]
             if dpath:
                 _argv += ["--decision", dpath]
-            _r = _sp.run(_argv, capture_output=True, text=True, timeout=600)
+            # F4 (round 6): the child must finish INSIDE the watchdog budget.
+            _r = _sp.run(_argv, capture_output=True, text=True,
+                         timeout=_subprocess_timeout())
             for _ln in (_r.stdout or "").splitlines():
                 print(f"    {_ln}")
             if _r.returncode != 0:

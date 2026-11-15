@@ -40,9 +40,21 @@ def make_rpc(pools, positions, fail=False):
 
 
 class CronFeeWiringTest(unittest.TestCase):
+    # 2026-11-15 (Fable round 6): a None contract hash is now FAIL-CLOSED
+    # ('unverified-no-codehash') — a findOne null must not read as verified.
+    # These tests exercise snapshot mechanics, so they present a known-good
+    # hash, exactly as the live cron does when the contract read succeeds.
+    GOOD_HASH = None
+
+    @classmethod
+    def setUpClass(cls):
+        from lp_fee_evidence import KNOWN_CONTRACT_HASHES
+        cls.GOOD_HASH = next(iter(KNOWN_CONTRACT_HASHES))
+
     def _run(self, mod, **kw):
         fn = getattr(mod, 'record_fee_snapshots', None)
         self.assertIsNotNone(fn, 'record_fee_snapshots missing from cron')
+        kw.setdefault('contract_hash', self.GOOD_HASH)
         return fn(**kw)
 
     def test_first_run_records_baseline_only(self):
@@ -53,7 +65,7 @@ class CronFeeWiringTest(unittest.TestCase):
                 rpc = make_rpc([POOL_A], [{'_account': 'acct', 'tokenPair': 'A:B', 'shares': '10'}])
                 out = self._run(mod, rpc=rpc, account='acct',
                                 positions={'A:B': object()}, store_path=store,
-                                at_ms=1000, contract_hash=None)
+                                at_ms=1000)
                 self.assertEqual(out['results']['A:B']['status'], 'snapshot_recorded')
                 self.assertEqual(len(store.read_text().strip().splitlines()), 1)
 

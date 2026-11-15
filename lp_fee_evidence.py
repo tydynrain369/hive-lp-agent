@@ -67,8 +67,12 @@ def _fmt_reserve(fr):
 
 
 def _hash_status(contract_hash):
+    # 2026-11-15 (Fable round 6): a MISSING hash is not a verified one. The
+    # old None -> 'ok' was fail-open: a findOne returning null (community
+    # mirror, or {}) made code_hash None and snapshots proceeded UNVERIFIED
+    # against an unknown contract. Unknown = unverified = fail closed.
     if contract_hash is None:
-        return 'ok'
+        return 'unverified-no-codehash'
     if contract_hash in KNOWN_CONTRACT_HASHES:
         return 'ok'
     if any(str(contract_hash).startswith(p) for p in KNOWN_GOOD_PREFIXES):
@@ -287,12 +291,14 @@ def record_fee_snapshots(rpc, account, positions, *, store_path=None, at_ms,
                                  KNOWN_GOOD_PREFIXES, KNOWN_CONTRACT_HASHES)
     store = Path(store_path or DEFAULT_SNAPSHOT_STORE)
     pairs = sorted(positions) if positions else []
-    hs = 'ok'
-    if contract_hash is not None:
-        hs = ('ok' if (contract_hash in KNOWN_CONTRACT_HASHES or
-                       any(str(contract_hash).startswith(p)
-                           for p in KNOWN_GOOD_PREFIXES))
-              else 'contract_unverified')
+    # 2026-11-15 (Fable round 6): same fail-closed rule as _hash_status —
+    # a None hash (findOne null -> {}) is UNVERIFIED, never silently ok.
+    hs = ('ok' if (contract_hash is not None
+                   and (contract_hash in KNOWN_CONTRACT_HASHES
+                        or any(str(contract_hash).startswith(p)
+                               for p in KNOWN_GOOD_PREFIXES)))
+          else ('unverified-no-codehash' if contract_hash is None
+                else 'contract_unverified'))
     # Single read for the whole call: builds every pair's prior snapshot, and is
     # the input to threshold rotation below.
     rows_by_key, unparsable = _read_snapshot_rows(store)

@@ -21,9 +21,14 @@ import lp_recommendation as R
 HOUR = 3_600_000
 POOL = "AAA:BBB"
 
-# 11 snapshots, 100 base / 100 quote volume per hour, share 1, tvl 2000:
-#   fees/interval = 200 * 0.0025 = 0.5  ->  0.5 * 8760 / 2000 * 100 = 219.0 %
-STEADY_APR = 219.0
+# 11 snapshots, 100 base / 100 quote volume per hour, share 1, tvl 2000.
+# 2026-11-15 (Fable round 6): the volume counters BOTH rise on every swap
+# (one swap: +amountIn on one side, +|amountOut| on the other), so the summed
+# notional is 2x the traded value and the fee (charged on ONE side) is rate x
+# notional/2:
+#   notional/interval = (100 + 100) / 2 = 100 -> fees = 0.25
+#   APR = 0.25 * 8760 / 2000 * 100 = 109.5 %
+STEADY_APR = 109.5
 
 
 def _snap(at_h, base_vol, quote_vol, base_res=1000.0, quote_res=1000.0,
@@ -141,25 +146,24 @@ class FeeAprAggregation(unittest.TestCase):
     def test_usd_valuation_kills_the_unit_mix(self):
         """P0-14 (Opus round 4): the old math summed raw token quantities —
         (d_base + d_quote) fees over (r0 + r1) TVL — which skews the APR by
-        the tokens' price ratio. With AAA worth 10x BBB, equal VOLUME in the
-        AAA side must read ~10x the fee income of the BBB side, and the APR
-        must reflect USD, not a mixed-unit sum."""
-        # 100 base vol (AAA @$10) + 100 quote vol (BBB @$0.1) per hour:
-        # USD fees/interval = (100*10 + 100*0.1) * 0.0025 = 2.525
+        the tokens' price ratio. 2026-11-15 (Fable round 6): the fixture is
+        now CHAIN-REALISTIC — a real swap moves BOTH counters (one swap of
+        100 AAA -> ~1000 BBB: baseVolume +100, quoteVolume +1000), so the
+        summed notional is 2x the traded value and the /2 correction is what
+        makes the two sides AGREE on the traded value."""
+        # d_base=100 (AAA @$10) + d_quote=10000 (BBB @$0.1) per hour:
+        # 1 AAA = 100 BBB, so a 100-AAA swap emits ~10,000 BBB — both sides
+        # value the trade at 1000 USD -> summed 2000, halved 1000
+        # fees/interval = 1000 * 0.0025 = 2.5 USD
         # USD TVL = (1000*10 + 1000*0.1) * 1 = 10100
-        # APR = 2.525 * 8760 / 10100 * 100 = 219.0 — the SYMMETRIC answer:
-        # the raw-unit math would have read (200*0.0025)*8760/2000*100 = 219
-        # here too (coincidence of this fixture), so assert the DIRECTION
-        # with a one-sided volume instead: all volume in AAA.
-        rows = [dict(_snap(i, i * 100, 0)) for i in range(11)]
+        # APR = 2.5 * 8760 / 10100 * 100 = 216.83
+        rows = [dict(_snap(i, i * 100, i * 10000)) for i in range(11)]
         self._write(rows)
         out = R.measure_fee_apr(POOL, price_map={"AAA": 10.0, "BBB": 0.1})
-        # fees = 100*10*0.0025 = 2.5 USD/h; TVL = 10100 USD
-        # APR = 2.5 * 8760 / 10100 * 100 = 216.83
         self.assertAlmostEqual(out["fee_apr_pct"], 216.832, places=2)
-        # and the raw-unit figure would have been 100*0.0025*8760/2000*100
-        # = 109.5 — assert we are NOT that.
-        self.assertNotAlmostEqual(out["fee_apr_pct"], 109.5, places=1)
+        # the BOTH-SIDES-COUNTED figure (no halving) would read 2x: 433.66 —
+        # the round-6 trap; assert we are NOT that.
+        self.assertNotAlmostEqual(out["fee_apr_pct"], 433.66, places=1)
 
     def test_time_weighting_makes_a_long_gap_count_as_long(self):
         """P1-14 companion (Opus round 4): a 40-hour QUIET gap must weigh as
@@ -173,12 +177,12 @@ class FeeAprAggregation(unittest.TestCase):
         # intervals: 1h earn, 1h earn, 1h earn, 40h QUIET (d=0), 1h earn
         self._write(rows)
         out = R.measure_fee_apr(POOL, price_map={"AAA": 1.0, "BBB": 1.0})
-        # earning 1h intervals: (200 * 0.0025) * 8760 / 2000 * 100 = 219.0
-        # time-weighted: (219*1 + 219*1 + 219*1 + 0*40 + 219*1) / 44 = 19.909
+        # earning 1h intervals: fees 0.25 -> (0.25 * 8760 / 2000 * 100) = 109.5
+        # time-weighted: (109.5*1 + 109.5*1 + 109.5*1 + 0*40 + 109.5*1) / 44
         self.assertAlmostEqual(out["fee_apr_pct"],
-                               (219.0 * 4 + 0.0 * 40) / 44.0, places=1)
-        # the equal-weighted figure would have been 219*4/5 = 175.2
-        self.assertLess(out["fee_apr_pct"], 30.0)
+                               (STEADY_APR * 4 + 0.0 * 40) / 44.0, places=1)
+        # the equal-weighted figure would have been 109.5*4/5 = 87.6
+        self.assertLess(out["fee_apr_pct"], 15.0)
 
     def test_unpriced_intervals_are_counted_not_valued(self):
         """An interval whose token prices are missing is UNKNOWN — skipped

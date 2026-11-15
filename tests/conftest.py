@@ -35,6 +35,22 @@ _SEALED = {
     "lp_executor_test": ("EXECUTIONS_LOG", os.path.join(_TMP, "test_executions.jsonl")),
     "cron_lp_agent": ("REPORTS_DIR", os.path.join(_TMP, "reports")),
     "liquidity_agent_v2": ("HE_NODE_STATE_PATH", os.path.join(_TMP, "he_node.json")),
+    # 2026-11-15 (Fable round 6, F2 follow-up): the audit found six MORE
+    # state paths the original seal missed. All default-paths audited and
+    # sealed (the rule: a module with a state path joins the seal in the
+    # same change — this is that change, late).
+    "lp_realloc_executor": ("REALLOC_LOG", os.path.join(_TMP, "reallocations.jsonl")),
+    "lp_realloc_executor:2": ("IDLE_DEPLOY_THROTTLE", os.path.join(_TMP, "LAST_IDLE_DEPLOY")),
+    "lp_decision": ("DECISIONS_DIR", os.path.join(_TMP, "decisions")),
+    "lp_fee_evidence": ("DEFAULT_SNAPSHOT_STORE", os.path.join(_TMP, "fee_snapshots.jsonl")),
+    "lp_recommendation": ("FEE_SNAPSHOTS_PATH", os.path.join(_TMP, "fee_snapshots.jsonl")),
+    "lp_test_tracker": ("DB_PATH", os.path.join(_TMP, "lp_tests.db")),
+    # NOTE (round 6 audit): lp_lifecycle.json has NO module-level path
+    # attribute — it resolves `os.path.join(os.path.dirname(__file__), ...)
+    # at CALL time, i.e. it writes next to the LIVE SOURCE. Nothing in the
+    # suite currently writes it (read-only filter use); if a test ever
+    # writes lifecycle state, that call site must grow a path parameter
+    # FIRST and then join this seal.
 }
 
 

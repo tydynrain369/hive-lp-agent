@@ -127,13 +127,25 @@ def _interval_fee_aprs(snaps, price_map=None):
             # an unpriced interval is UNKNOWN, not zero — skip and count
             unpriced += 1
             continue
-        fees_usd = (d_base * float(p0) + d_quote * float(p1)) * FEE_RATE * share
+        # 2026-11-15 (Fable round 6): the volume counters double-count. The
+        # deployed contract's updatePoolStats(..., swap=true) increments BOTH
+        # baseVolume and quoteVolume by |delta| on every swap (one swap:
+        # +amountIn on one side, +|amountOut| on the other), so the summed
+        # notional (d_base*p0 + d_quote*p1) is ~2x the traded value, while the
+        # fee is charged on ONE side per swap. Halve it: fee = rate x notional.
+        fees_usd = (d_base * float(p0) + d_quote * float(p1)) / 2.0 \
+            * FEE_RATE * share
         tvl_usd = (float(r[t0]) * float(p0)
                    + float(r[t1]) * float(p1)) * share
         if tvl_usd <= 0:
             unpriced += 1
             continue
         apr_pct = (fees_usd / dt_h) * SECONDS_PER_YEAR_H / tvl_usd * 100.0
+        # The two fee figures are per-side entitlements: the fee for an interval
+        # IF all its swaps had settled in that one token. The pair's ACTUAL fee
+        # income (either summed in USD or as a total) is HALF their sum — the
+        # both-sides volume counters double-count a one-side fee (round 6). The
+        # APR above carries the /2; consumers that aggregate these must too.
         obs.append((apr_pct,
                     d_base * FEE_RATE * share, d_quote * FEE_RATE * share,
                     dt_h))
@@ -353,7 +365,11 @@ def position_economics(position, pool, fee_info, entitlement, price_map,
             out["reason"] = (f"measured fee accrual in unpriced token(s) "
                              f"{_unpriced_earned} — fee USD UNKNOWN, not zero")
         else:
-            out["our_measured_fee_usd"] = base_usd + quote_usd
+            # 2026-11-15 (Fable round 6): the earned_base/earned_quote pair
+            # double-counts — the contract increments BOTH volume counters per
+            # swap but charges the fee on ONE side. The actual fee income is
+            # half the two-side sum.
+            out["our_measured_fee_usd"] = (base_usd + quote_usd) / 2.0
             out["fee_evidence"] = "measured"
     else:
         out["fee_evidence"] = "unmeasured"

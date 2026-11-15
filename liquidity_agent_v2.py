@@ -7,6 +7,7 @@ import json
 import os
 import time
 import logging
+import threading
 from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
@@ -47,32 +48,25 @@ HE_USER_AGENT = "hive-lp-agent/2.1 (Hermes autonomous operator; contact: hive @t
 HE_NODE_STATE_PATH = os.path.expanduser("~/.hermes/lp_tests/he_node.json")
 
 
-def _he_node_start():
-    """Index of the last node that answered (cross-tick sticky memory)."""
-    try:
-        with open(HE_NODE_STATE_PATH) as fh:
-            i = int(json.load(fh).get("index", 0))
-        if 0 <= i < len(HE_NODES):
-            return i
-    except Exception:
-        pass
-    return 0
-
-
-_HE_NODE_IDX = [_he_node_start()]   # mutable box: process-wide sticky index
-
-
-def _he_node_rotate():
-    _HE_NODE_IDX[0] = (_HE_NODE_IDX[0] + 1) % len(HE_NODES)
+# 2026-11-15 (Fable round 6): the process ALWAYS starts at the official
+# pair — no cross-tick resume. A mirror that answered yesterday must not
+# outrank the official pair today, and a stale persisted index (left by a
+# smoke test, as happened) would silently pin every tick to a volunteer
+# node. The persisted file is now diagnostics only.
+_HE_NODE_IDX = [0]   # mutable box: process-wide sticky index
+_HE_LOCK = threading.Lock()          # guards the box + persist (round 6, F9)
+_HE_RING_DEAD = [False]              # circuit breaker: one full-ring failure
 
 
 def _he_node_persist():
     try:
         os.makedirs(os.path.dirname(HE_NODE_STATE_PATH), exist_ok=True)
         tmp = HE_NODE_STATE_PATH + ".tmp"
+        with _HE_LOCK:
+            idx = _HE_NODE_IDX[0]
         with open(tmp, "w") as fh:
-            json.dump({"index": _HE_NODE_IDX[0],
-                       "node": HE_NODES[_HE_NODE_IDX[0]]["base"]}, fh)
+            json.dump({"index": idx,
+                       "node": HE_NODES[idx]["base"]}, fh)
         os.replace(tmp, HE_NODE_STATE_PATH)
     except Exception:
         pass   # memory is an optimization; rotation works without it
@@ -177,7 +171,108 @@ OUR_POOL_FEES = {
     },
 }
 
-# ─── RPC Helper ──────────────────────────────────────────────────────
+# ─── RPC Helper ──────────────────────────────────────────────────────────
+def _he_request(node, p):
+    data = json.dumps(p).encode()
+    resp = None
+    last_err = None
+    for attempt in range(3):
+        try:
+            req = Request(node["base"] + node["path"], data=data,
+                          headers={"Content-Type": "application/json",
+                                   "User-Agent": HE_USER_AGENT})
+            with urlopen(req, timeout=30) as r:
+                resp = json.load(r)
+            break
+        except Exception as e:   # read-only: retry with backoff
+            last_err = e
+            time.sleep(1 + attempt)
+    if resp is None:
+        raise RuntimeError(f"HE RPC failed after 3 attempts: {last_err}")
+    if "error" in resp:
+        raise RuntimeError(f"RPC error: {resp['error']}")
+    return resp
+
+
+# 2026-11-14 (live incident, round 5): the faulthandler watchdog caught
+# he()'s own read hanging >20 minutes DESPITE urlopen(timeout=30) — an
+# api.hive-engine.com node that accepts the connection and never answers
+# (the "provider goes silent under load" pattern), and this ssl read path
+# does not honor the socket timeout. Defense that CANNOT be ignored: run
+# each call in a daemon thread and JOIN WITH A HARD CAP. A hung call
+# abandons its thread (the watchdog kills the process at 20 min anyway)
+# and raises like any other transient error — retries pick it up.
+_CALL_TIMEOUT_S = 60.0
+
+
+def _call_bounded(node, p):
+    box = {}
+
+    def _run():
+        try:
+            box.setdefault("r", _he_request(node, p))
+        except Exception as _te:   # fast failure: surface it, don't leak
+            box.setdefault("err", _te)
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout=_CALL_TIMEOUT_S)
+    if t.is_alive():
+        raise RuntimeError(
+            f"HE RPC exceeded {_CALL_TIMEOUT_S:.0f}s (no response) "
+            f"— abandoned hung read")
+    if "r" not in box:
+        raise RuntimeError("HE RPC call failed before returning")
+    return box["r"]
+
+
+def _rpc_rotated(p, method):
+    """One RPC against the sticky node; rotate to the next on failure.
+
+    The 2026-11-14 "black-hole windows" turned out (Fable round 6) to be
+    largely OUR OWN double-pagination loop — but per-node wedges are real
+    (verified live), so rotation stays. Official endpoints FIRST: the
+    process starts at index 0 every tick (no cross-tick resume — a mirror
+    that answered yesterday must not outrank the official pair today),
+    advances the sticky index on failure, persists only on success.
+    A community mirror returned result:null for a find on a table the
+    official node serves (incomplete sync) — for a FIND, a null result is
+    NODE FAILURE (rotate), never an empty answer: a fabricated empty
+    would read as "no pools" downstream. CIRCUIT BREAKER (Fable round 6,
+    budget nesting): after ONE full-ring failure this process raises
+    immediately on every later call — one bounded ring sweep per tick,
+    not one per call site. The mutation of the shared index is
+    lock-guarded (the phase-budgeted assessment thread and the main
+    thread both call he()); races can then only skip a node, never
+    corrupt it.
+    """
+    if _HE_RING_DEAD[0]:
+        raise RuntimeError(
+            "HE RPC: the whole node ring already failed this process "
+            "(circuit breaker) — not retrying")
+    last_err = None
+    for _ in range(len(HE_NODES)):
+        with _HE_LOCK:
+            node = HE_NODES[_HE_NODE_IDX[0]]
+        try:
+            resp = _call_bounded(node, p)
+            result = resp.get("result") if isinstance(resp, dict) else None
+            if method == "find" and "result" in resp and result is None:
+                raise RuntimeError("node returned null for a find "
+                                   "(incomplete mirror) — not an answer")
+            _he_node_persist()   # diagnostics: remember the node that answered
+            return resp
+        except Exception as e:
+            last_err = e
+            logging.getLogger(__name__).warning(
+                "HE node %s failed (%s) — rotating to next",
+                node["base"], type(e).__name__)
+            with _HE_LOCK:
+                _HE_NODE_IDX[0] = (_HE_NODE_IDX[0] + 1) % len(HE_NODES)
+    _HE_RING_DEAD[0] = True
+    raise last_err if last_err else RuntimeError("HE RPC: no nodes")
+
+
 def he(method: str, params: dict):
     """HE contract call with PAGINATION + read-retry.
 
@@ -195,112 +290,72 @@ def he(method: str, params: dict):
     tick down at cron_lp_agent's first findOne. Non-'find' results are
     returned untouched; a 'find' that somehow yields a non-list is also
     returned untouched rather than exploded into keys.
+
+    2026-11-15 (Fable round 6, the REAL root cause of the "black-hole"
+    incident): DOUBLE PAGINATION. he() overwrote the caller's offset with
+    its own, always starting at 0 and returning the WHOLE table — so an
+    adapter that ALSO paginates (lp_position_assessment.rows(), offset
+    len(result)) saw a full table as every "page", never hit the short-
+    page stop, and looped forever on any table >= 1000 rows (tokens/
+    tokens). Every "landscape read exceeded 360s" tick and the original
+    8h50m hang were this loop, not a dead node. CONTRACT: if the caller
+    supplies "offset", he() is a SINGLE-PAGE reader — one call at that
+    exact offset, page returned as-is (caller owns pagination). Without
+    an offset he() owns pagination — but all pages of one he() call come
+    from ONE node: a mid-pagination failure rotates and RESTARTS from
+    offset 0 on the next node, so pages are never stitched across nodes
+    with different sync heads.
     """
     payload = {"jsonrpc": "2.0", "method": method,
                "params": dict(params), "id": 1}
 
-    def _call(node, p):
-        data = json.dumps(p).encode()
-        resp = None
-        last_err = None
-        for attempt in range(3):
-            try:
-                req = Request(node["base"] + node["path"], data=data,
-                              headers={"Content-Type": "application/json",
-                                       "User-Agent": HE_USER_AGENT})
-                with urlopen(req, timeout=30) as r:
-                    resp = json.load(r)
-                break
-            except Exception as e:   # read-only: retry with backoff
-                last_err = e
-                time.sleep(1 + attempt)
-        if resp is None:
-            raise RuntimeError(f"HE RPC failed after 3 attempts: {last_err}")
-        if "error" in resp:
-            raise RuntimeError(f"RPC error: {resp['error']}")
-        return resp
-
-    # 2026-11-14 (live incident, round 5): the faulthandler watchdog caught
-    # he()'s own read hanging >20 minutes DESPITE urlopen(timeout=30) — an
-    # api.hive-engine.com node that accepts the connection and never answers
-    # (the "provider goes silent under load" pattern), and this ssl read path
-    # does not honor the socket timeout. Defense that CANNOT be ignored: run
-    # each call in a daemon thread and JOIN WITH A HARD CAP. A hung call
-    # abandons its thread (the watchdog kills the process at 20 min anyway)
-    # and raises like any other transient error — retries pick it up.
-    import threading
-    _CALL_TIMEOUT_S = 60.0
-
-    def _call_bounded(node, p):
-        box = {}
-
-        def _run():
-            try:
-                box.setdefault("r", _call(node, p))
-            except Exception as _te:   # fast failure: surface it, don't leak
-                box.setdefault("err", _te)
-
-        t = threading.Thread(target=_run, daemon=True)
-        t.start()
-        t.join(timeout=_CALL_TIMEOUT_S)
-        if t.is_alive():
-            raise RuntimeError(
-                f"HE RPC exceeded {_CALL_TIMEOUT_S:.0f}s (no response) "
-                f"— abandoned hung read")
-        if "r" not in box:
-            raise RuntimeError("HE RPC call failed before returning")
-        return box["r"]
-
-    def _rpc_rotated(p, method):
-        """One RPC against the sticky node; rotate to the next on failure.
-
-        The 2026-11-14 black-hole windows are per-node: a wedged edge
-        accepts TCP+TLS and never answers. Advance the sticky index and
-        try the next node in the ring (official pair first, then the
-        trusted community mirrors); persist only on success. A community
-        mirror returned result:null for a find on a table the official
-        node serves (incomplete sync) — for a FIND, a null result is
-        NODE FAILURE (rotate), never an empty answer: a fabricated empty
-        would read as "no pools" downstream. Worst case (all nodes
-        unusable) this raises after len(HE_NODES) bounded tries — the
-        caller's fail-closed path takes over.
-        """
-        last_err = None
-        for _ in range(len(HE_NODES)):
-            node = HE_NODES[_HE_NODE_IDX[0]]
-            try:
-                resp = _call_bounded(node, p)
-                result = resp.get("result") if isinstance(resp, dict) else None
-                if method == "find" and "result" in resp and result is None:
-                    raise RuntimeError("node returned null for a find "
-                                       "(incomplete mirror) — not an answer")
-                _he_node_persist()   # sticky: remember the node that answered
-                return resp
-            except Exception as e:
-                last_err = e
-                logging.getLogger(__name__).warning(
-                    "HE node %s failed (%s) — rotating to next",
-                    node["base"], type(e).__name__)
-                _he_node_rotate()
-        raise last_err if last_err else RuntimeError("HE RPC: no nodes")
-
     if method != "find":
         return _rpc_rotated(payload, method).get("result") or {}
-    page_limit = int(params.get("limit", 1000) or 1000)
-    rows: list = []
-    offset = 0
-    while True:
-        payload["params"]["offset"] = offset
+
+    if "offset" in params:
+        # Caller-managed pagination: one page at the caller's offset,
+        # verbatim. he() must NOT overwrite it — that was the infinite loop.
         resp = _rpc_rotated(payload, method)
-        page = resp.get("result", []) or []
-        if not isinstance(page, list):
-            return page          # contract changed shape: never explode keys
-        rows.extend(page)
-        if len(page) < page_limit:
-            return rows
-        offset += len(page)
-        if offset > 100_000:   # hard stop: a table this big is a caller bug
-            raise RuntimeError(f"pagination exceeded 100k rows on {method}")
+        return resp.get("result", []) or []
+
+    page_limit = int(params.get("limit", 1000) or 1000)
+    last_err: Exception | None = None
+    for _ in range(len(HE_NODES)):
+        with _HE_LOCK:
+            node = HE_NODES[_HE_NODE_IDX[0]]
+        rows: list = []
+        offset = 0
+        try:
+            while True:
+                payload["params"]["offset"] = offset
+                resp = _call_bounded(node, payload)
+                result = resp.get("result") if isinstance(resp, dict) else None
+                if "result" in resp and result is None:
+                    raise RuntimeError("node returned null for a find "
+                                       "(incomplete mirror) — not an answer")
+                page = resp.get("result", []) or []
+                if not isinstance(page, list):
+                    return page      # contract changed shape: never explode keys
+                rows.extend(page)
+                if len(page) < page_limit:
+                    _he_node_persist()   # whole table read: node proven good
+                    return rows
+                offset += len(page)
+                if offset > 100_000:   # hard stop: a table this big is a bug
+                    raise RuntimeError(
+                        f"pagination exceeded 100k rows on {method}")
+        except Exception as e:
+            last_err = e
+            logging.getLogger(__name__).warning(
+                "HE node %s failed mid-pagination (%s) — rotating and "
+                "restarting the table read from offset 0",
+                node["base"], type(e).__name__)
+            with _HE_LOCK:
+                _HE_NODE_IDX[0] = (_HE_NODE_IDX[0] + 1) % len(HE_NODES)
+            if _HE_RING_DEAD[0]:
+                raise last_err
+    _HE_RING_DEAD[0] = True
+    raise last_err if last_err else RuntimeError("HE RPC: no nodes")
 
 # ─── Data Classes ────────────────────────────────────────────────────
 @dataclass

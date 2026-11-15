@@ -266,23 +266,120 @@ class TestHeTransportFidelity(unittest.TestCase):
         self.assertEqual(out, {"weird": True})
 
 
-class TestHeNodeRotation(unittest.TestCase):
-    """2026-11-14 (Tydyn's call): api.hive-engine.com black-holes reads for
-    hours; api2.hive-engine.com is the OFFICIAL mirror. he() must rotate to
-    the next official endpoint on failure, stick to the one that answered,
-    and persist the choice across ticks. Probed with REAL POSTs: both
-    official endpoints answered in 0.8s while the primary was wedged."""
+class TestAssessThroughRealHe(unittest.TestCase):
+    """2026-11-15 (Fable round 6, THE regression): he() used to overwrite the
+    caller's offset with its own, always returning the WHOLE table — so an
+    adapter that ALSO paginates (lp_position_assessment.rows(), offset
+    len(result)) saw a full table as every 'page', never hit the short-page
+    stop, and looped forever on any table >= 1000 rows (tokens/tokens is
+    ~2000+). Every 'landscape read exceeded 360s' tick and the original
+    8h50m hang were this loop, not a dead node — and the suite missed it
+    because every consumer test stubs he() at the boundary. This test drives
+    assess_positions through the REAL he() over a fake transport whose
+    tokens table has 2,500 rows: with the bug, the request stream repeats
+    offset=0 forever (the guard trips); with the fix, three offset-honoring
+    pages and done."""
+
+    def test_assessment_completes_on_a_2500_row_table(self):
+        import lp_position_assessment as PA
+        LAV2 = self.LAV2
+        LAV2._HE_NODE_IDX[0] = 0
+        LAV2._HE_RING_DEAD[0] = False
+        LAV2.HE_NODE_STATE_PATH = os.path.join(tempfile.mkdtemp(), "he.json")
+        CODE = {"marketpools": "fd6d750418df6b23de96fa0ba8cb006828dcbc272d566c6847204b552a41004c",
+                "distribution": "6bd095db17d7c2b76ce534b8235b9fcf05c4f9c033bc2d1d87ede518c5dd4178"}
+        TOKENS = [{"_id": i, "symbol": f"T{i}", "precision": 8}
+                  for i in range(2500)]
+        OFFSETS = []          # every offset that reached the wire
+        LIMIT = 40            # a looping offset=0 stream trips this, not hangs
+
+        def fake(req, timeout=None):
+            body = json.loads(req.data.decode())
+            params = body.get("params") or {}
+            method = body.get("method")
+            OFFSETS.append(params.get("offset"))
+            self.assertLess(len(OFFSETS), LIMIT,
+                            "double pagination loop: offset never advanced")
+            if method == "getContract":
+                return io.BytesIO(json.dumps(
+                    {"jsonrpc": "2.0", "id": 1,
+                     "result": {"codeHash": CODE.get(params.get("name"),
+                                                   "x" * 64)}}).encode())
+            table = params.get("table")
+            offset = int(params.get("offset") or 0)   # HONOR the caller's offset
+            limit = int(params.get("limit") or 1000)
+            if table == "tokens":
+                page = TOKENS[offset:offset + limit]
+            elif table == "liquidityPositions":
+                page = [] if offset else [
+                    {"account": "hermes-sandbox", "tokenPair": "A:B",
+                     "shares": "1"}]
+            elif table == "pools":
+                page = [] if offset else [
+                    {"tokenPair": "A:B", "baseQuantity": "1000",
+                     "quoteQuantity": "1000", "basePrice": "1",
+                     "quotePrice": "1", "totalShares": "1"}]
+            elif table == "balances":
+                page = [] if offset else [
+                    {"account": "hermes-sandbox", "symbol": "A",
+                     "balance": "1", "staked": "0"}]
+            elif table == "batches":
+                page = []
+            elif table == "params":
+                page = [] if offset else [{"_id": 1}]
+            else:
+                page = []
+            return io.BytesIO(json.dumps(
+                {"jsonrpc": "2.0", "id": 1, "result": page}).encode())
+
+        with patch.object(LAV2, "urlopen", fake):
+            report = PA.assess_positions(LAV2.he, "hermes-sandbox")
+        # the decisive assertion: the offsets on the wire advanced
+        self.assertIn(0, OFFSETS)
+        self.assertIn(1000, OFFSETS)
+        self.assertIn(2000, OFFSETS)
+        self.assertNotIn(3000, OFFSETS)
+        # the assessment completed at all — with the bug it never returns
+        # (the offset=0 loop trips the LIMIT guard inside the transport)
+        self.assertIsNotNone(report)
 
     def setUp(self):
         import liquidity_agent_v2 as LAV2
         self.LAV2 = LAV2
         self._idx = LAV2._HE_NODE_IDX[0]
+        self._dead = LAV2._HE_RING_DEAD[0]
         LAV2._HE_NODE_IDX[0] = 0
+        LAV2._HE_RING_DEAD[0] = False
+
+    def tearDown(self):
+        self.LAV2._HE_NODE_IDX[0] = self._idx
+        self.LAV2._HE_RING_DEAD[0] = self._dead
+
+
+class TestHeNodeRotation(unittest.TestCase):
+    """2026-11-14 (Tydyn's call): api.hive-engine.com black-holes reads for
+    hours; api2.hive-engine.com is the OFFICIAL mirror. he() must rotate to
+    the next official endpoint on failure and stick to the one that answered
+    WITHIN the tick. 2026-11-15 (Fable round 6): the ring restarts at the
+    official pair EVERY process (no cross-tick resume — a stale persisted
+    index from a smoke test silently pinned the tick to a volunteer node),
+    the persisted file is diagnostics only, and a one-full-ring-failure
+    circuit breaker bounds the tick's wasted time. Probed with REAL POSTs:
+    both official endpoints answered in 0.8s while the primary was wedged."""
+
+    def setUp(self):
+        import liquidity_agent_v2 as LAV2
+        self.LAV2 = LAV2
+        self._idx = LAV2._HE_NODE_IDX[0]
+        self._dead = LAV2._HE_RING_DEAD[0]
+        LAV2._HE_NODE_IDX[0] = 0
+        LAV2._HE_RING_DEAD[0] = False   # the breaker must not leak across tests
         LAV2.HE_NODE_STATE_PATH = os.path.join(
             tempfile.mkdtemp(), "he_node.json")
 
     def tearDown(self):
         self.LAV2._HE_NODE_IDX[0] = self._idx
+        self.LAV2._HE_RING_DEAD[0] = self._dead
 
     def _fake_transport(self, calls):
         """Fail (hang-shaped: slow) on node 0, answer on node 1."""
@@ -309,15 +406,22 @@ class TestHeNodeRotation(unittest.TestCase):
         # 60s join before any retry), then the mirror answered
         self.assertIn("api.hive-engine.com", calls[0])
         self.assertIn("api2.hive-engine.com", calls[-1])
-        # sticky index advanced to the mirror and persisted for next tick
+        # sticky index advanced to the mirror for the rest of THIS tick,
+        # and the diagnostics file records the node that answered
         self.assertEqual(LAV2._HE_NODE_IDX[0], 1)
         with open(LAV2.HE_NODE_STATE_PATH) as fh:
             self.assertEqual(json.load(fh)["index"], 1)
 
-    def test_sticky_memory_starts_on_the_last_healthy_node(self):
+    def test_ring_restarts_at_the_official_pair_each_process(self):
+        """2026-11-15 (Fable round 6): NO cross-tick resume. A stale
+        persisted index (left by the node smoke test) had silently pinned
+        the tick to a volunteer mirror; the official pair must outrank it
+        every fresh process."""
         calls = []
         LAV2 = self.LAV2
-        LAV2._HE_NODE_IDX[0] = 1     # mirror answered last tick
+        # simulate yesterday's sticky state on disk
+        with open(LAV2.HE_NODE_STATE_PATH, "w") as fh:
+            json.dump({"index": 7, "node": "https://herpc.dtools.dev"}, fh)
         def fake(req, timeout=None):
             calls.append(req.full_url)
             return io.BytesIO(json.dumps(
@@ -327,8 +431,9 @@ class TestHeNodeRotation(unittest.TestCase):
             out = LAV2.he("findOne", {"contract": "c", "table": "t",
                                       "query": {}})
         self.assertEqual(out.get("ok"), True)
-        self.assertEqual(len(calls), 1)          # no wasted call to the wedged primary
-        self.assertIn("api2.hive-engine.com", calls[0])
+        self.assertEqual(len(calls), 1)
+        self.assertIn("api.hive-engine.com", calls[0],
+                      "official pair first, whatever the persisted file says")
 
     def test_null_on_find_is_node_failure_not_an_empty_answer(self):
         """A community mirror returned result:null for a find on a table the
