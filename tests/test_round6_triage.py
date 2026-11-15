@@ -127,5 +127,110 @@ class TestThrottleWriteAbort(unittest.TestCase):
             X.IDLE_DEPLOY_THROTTLE = old
 
 
+class TestBacklogBoundV2(unittest.TestCase):
+    """Round 7 (A-12): only a BROADCAST removal latches; an appended
+    stage_consumed record clears it; dry-runs never latch."""
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self._orig = X.REALLOC_LOG
+        X.REALLOC_LOG = os.path.join(self.dir, "reallocations.jsonl")
+        self.addCleanup(setattr, X, "REALLOC_LOG", self._orig)
+
+    def _row(self, status):
+        return json.dumps({
+            "plan": {"action": "remove_and_stage", "from_pool": "A:B"},
+            "removal": {"status": status},
+            "deposit": {"status": "not-implemented"},
+            "timestamp": "2026-11-15T00:00:00"}) + "\n"
+
+    def test_dry_run_does_not_latch(self):
+        with open(X.REALLOC_LOG, "w") as fh:
+            fh.write(self._row("dry-run"))
+        self.assertIsNone(X._staged_deposit_outstanding())
+
+    def test_broadcast_latches_and_consumed_clears(self):
+        with open(X.REALLOC_LOG, "w") as fh:
+            fh.write(self._row("broadcast"))
+            fh.write(json.dumps({"type": "stage_consumed",
+                                 "by": "operator", "ts": "2026-11-15"}) + "\n")
+        self.assertIsNone(X._staged_deposit_outstanding())
+
+    def test_consumed_only_clears_stages_before_it(self):
+        with open(X.REALLOC_LOG, "w") as fh:
+            fh.write(self._row("broadcast"))
+            fh.write(json.dumps({"type": "stage_consumed"}) + "\n")
+            fh.write(self._row("broadcast"))
+        out = X._staged_deposit_outstanding()
+        self.assertIsNotNone(out)   # the SECOND stage is still outstanding
+
+
+class TestHeBreakerEntry(unittest.TestCase):
+    """Round 7 (A-4): the ring-dead breaker must gate he()'s own pagination
+    ENTRY — after a full-ring failure a paginated find must not spend even
+    one more 60s node attempt."""
+    def test_dead_ring_raises_immediately_on_paginated_find(self):
+        import liquidity_agent_v2 as LAV2
+        calls = []
+        old_dead, old_idx = LAV2._HE_RING_DEAD[0], LAV2._HE_NODE_IDX[0]
+        LAV2._HE_RING_DEAD[0] = True
+        LAV2._HE_NODE_IDX[0] = 0
+        try:
+            with self.assertRaises(RuntimeError) as ctx:
+                LAV2.he("find", {"contract": "c", "table": "t",
+                                 "query": {}, "limit": 10})
+            self.assertIn("circuit breaker", str(ctx.exception))
+            self.assertEqual(calls, [])   # no wire attempt at all
+        finally:
+            LAV2._HE_RING_DEAD[0] = old_dead
+            LAV2._HE_NODE_IDX[0] = old_idx
+
+
+class TestSubprocessBudget(unittest.TestCase):
+    """Round 7 (A-4): the child timeout must fit the watchdog budget, and the
+    budget arithmetic must floor sanely."""
+    def test_timeout_fits_remaining_budget(self):
+        import cron_lp_agent as C
+        t0_old = C._TICK_T0
+        C._TICK_T0 = None
+        try:
+            self.assertEqual(C._subprocess_timeout(), 600)   # un-armed: default
+        finally:
+            C._TICK_T0 = t0_old
+        import time as _t
+        C._TICK_T0 = _t.monotonic() - (C._WATCHDOG_SECONDS - 700)  # ~700s left
+        try:
+            # ~700 - 180 = ~520s child budget: inside the watchdog (the
+            # elapsed monotonic read adds microseconds — compare loosely)
+            self.assertAlmostEqual(C._subprocess_timeout(), 520, delta=1.0)
+            C._TICK_T0 = _t.monotonic() - (C._WATCHDOG_SECONDS - 100)  # ~100s left
+            self.assertEqual(C._subprocess_timeout(), 120)   # floor, not negative
+        finally:
+            C._TICK_T0 = t0_old
+
+
+class TestSealCoversEverything(unittest.TestCase):
+    """Round 7 (A-2): the seal meta-test — every declared (module, attr)
+    entry was actually repointed. The ':2' key bug made the seal SILENTLY
+    skip entries; this pin makes silence impossible."""
+    def test_every_sealed_entry_applied(self):
+        import conftest
+        declared = {(m, a) for m, a, _ in conftest._SEALED}
+        self.assertEqual(set(conftest._SEALED_APPLIED), declared,
+                         "the seal silently skipped entries — a module "
+                         "failed to import or an attr is missing")
+
+    def test_tracker_resolves_db_at_call_time(self):
+        # the def-time-binding class of bug, round 3: the seal's setattr
+        # must reach the tracker's constructor.
+        import conftest
+        import lp_test_tracker as T
+        sealed_db = dict(conftest._SEALED)[("lp_test_tracker", "DB_PATH")] \
+            if isinstance(conftest._SEALED, dict) else None
+        t = T.LPTestTracker(config={})
+        self.assertTrue(str(getattr(t, "db_path", "")).startswith(
+            tempfile.gettempdir()),
+            f"tracker db_path {getattr(t, 'db_path', None)} is not sealed")
+
+
 if __name__ == "__main__":
     unittest.main()

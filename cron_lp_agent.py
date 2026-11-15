@@ -25,6 +25,13 @@ _TICK_T0 = None          # set in main(); anchors the budget arithmetic
 _TICK_DEGRADED = [False]  # landscape read failed this tick: no broadcasts
 
 
+def _tick_budget_left():
+    """Seconds of watchdog budget remaining, or None before main() armed it."""
+    if _TICK_T0 is None:
+        return None
+    return _WATCHDOG_SECONDS - (time.monotonic() - _TICK_T0)
+
+
 def _subprocess_timeout(default=600):
     """Executor subprocess timeout that fits INSIDE the watchdog budget.
 
@@ -33,11 +40,12 @@ def _subprocess_timeout(default=600):
     the run lock, and an orphaned live executor overlaps the next tick.
     The child gets what remains of the budget, minus a margin for the
     parent's own teardown; never below 120s (a legitimate pre-flight
-    refusal still has time to print).
+    refusal still has time to print). Round 7 (A-4): the spawn SITE also
+    refuses when <300s remain — the floor alone still admitted the orphan.
     """
-    if _TICK_T0 is None:
+    remaining = _tick_budget_left()
+    if remaining is None:
         return default
-    remaining = _WATCHDOG_SECONDS - (time.monotonic() - _TICK_T0)
     return max(120, min(default, remaining - 180))
 
 import json
@@ -1017,9 +1025,15 @@ def main():
         decision = decide(held_pools, reward_discovery,
                           position_economics=eco_map,
                           threshold_analysis=th_map,
+                          # 2026-11-15 (Fable round 7, C-11): rec is NOT
+                          # guaranteed here — the comment at the rec build
+                          # claims a pre-bound guard, but this expression
+                          # sits OUTSIDE `if rec:` and a recommendation-layer
+                          # failure TypeError'd the WHOLE decision into the
+                          # soft-catch. Empty override when rec is None.
                           fee_evidence_override={
                               p: {"fee_apr_pct_authoritative": v.get("fee_apr_pct")}
-                              for p, v in rec["verdicts"].items()
+                              for p, v in ((rec or {}).get("verdicts") or {}).items()
                               if v.get("fee_apr_pct") is not None
                           },
                           # 2026-10-02: without a price map the decision layer
@@ -1043,6 +1057,7 @@ def main():
         # AFTER it is written and can change nothing. It never sees keys, never
         # produces an amount, and its verdict is stored in a sidecar file.
         # Any failure here is swallowed: advisory must never break the agent.
+        _adv_verdict = None   # round 7 A-6: bound even if the advisory step fails
         try:
             import lp_advisory
             rec_verdicts = {}
@@ -1057,6 +1072,7 @@ def main():
                 rec_verdicts = {}
 
             adv = lp_advisory.adjudicate(decision.to_dict(), rec_verdicts)
+            _adv_verdict = adv.get("verdict")   # round 7 A-6: read by the exit gate
             sidecar = dpath.replace(".json", ".advisory.json")
             # P1-5 (Opus round 3): the sidecar carries the decision_id from
             # the written artifact, so the executor can verify it belongs to
@@ -1103,8 +1119,26 @@ def main():
 
     print("\n=== TEST EXECUTION (guarded; LP_TEST_LIVE env required for broadcast) ===")
     _acted = False
+    # 2026-11-15 (Fable round 7, A-6): the LEGACY exit leg was the one
+    # broadcast path no new gate reached — it ran before the degraded check
+    # (which only guarded the subprocess spawn), ignored the advisory
+    # CHALLENGE, and removed the WHOLE position up to the USD cap. Same
+    # rules as every other broadcast path now: a degraded tick or an
+    # advisory CHALLENGE holds capital still. (The 25%-vs-full-exit policy
+    # question is deliberately NOT changed here: an exit verdict removing
+    # the whole position is the exit's meaning — flagged for the operator.)
+    _exit_gate = (not _TICK_DEGRADED[0]
+                  and _adv_verdict != "CHALLENGE")
     try:
-        if decision is not None:
+        if decision is not None and not _exit_gate:
+            if _TICK_DEGRADED[0]:
+                print("  [DEGRADED] landscape read failed — legacy exit leg "
+                      "held (capital stays put).")
+            else:
+                print("  [CHALLENGE] advisory challenged this decision — "
+                      "legacy exit leg held.")
+            actions = []
+        elif decision is not None:
             actions = execute_from_decision(agent, decision)
             # 2026-11-13 (Claude review P0-2): one action per run is a HARD
             # invariant. If the exit leg broadcast, the executor subprocess
@@ -1149,8 +1183,14 @@ def main():
         if _live and _acted:
             print("  [AUTONOMY] exit leg already broadcast this run — "
                   "one action per run; executor subprocess skipped.")
-        elif _live and _TICK_DEGRADED[0]:
-            # 2026-11-15 (Fable round 6, F6): degraded tick — no broadcasts.
+        elif _live and (_TICK_DEGRADED[0] or _tick_budget_left() < 300):
+            # 2026-11-15 (Fable round 6 F6 + round 7 A-4): degraded tick — no
+            # broadcasts; and a tick with <300s of watchdog budget left does
+            # not START a child that would outlive its parent (the 120s floor
+            # alone still admitted the orphan case).
+            if not _TICK_DEGRADED[0]:
+                print("  [BUDGET] too little watchdog budget left for an "
+                      "executor child — spawn skipped.")
             pass   # the [DEGRADED] notice already printed above
         elif _live and _rec:
             # 2026-10-17: the reallocation branch — an exit source

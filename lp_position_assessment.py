@@ -13,16 +13,14 @@ def assess_positions(rpc, account):
         return rpc(method, params)
 
     def rows(contract, table, query=None):
-        result = []
-        while True:
-            page = read('find', {'contract': contract, 'table': table,
-                        'query': query or {}, 'limit': 1000, 'offset': len(result),
-                        'indexes': [{'index': '_id', 'descending': False}]})
-            if not isinstance(page, list):
-                raise ValueError('invalid RPC page')
-            result.extend(page)
-            if len(page) < 1000:
-                return result
+        # 2026-11-15 (Fable round 7, C-10): the adapter's own pagination is
+        # GONE. he() owns pagination when the caller passes no offset — and
+        # keeps every page of one table on ONE node (restarting from offset 0
+        # on rotation), so pages can never stitch across nodes with different
+        # sync heads. The old adapter loop called he() once per page, and
+        # each call rotated independently.
+        return read('find', {'contract': contract, 'table': table,
+                             'query': query or {}, 'limit': 1000})
 
     refs = {name: read('getContract', {'name': name}) for name in EXPECTED}
     for name, expected in EXPECTED.items():

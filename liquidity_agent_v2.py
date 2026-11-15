@@ -319,6 +319,14 @@ def he(method: str, params: dict):
         return resp.get("result", []) or []
 
     page_limit = int(params.get("limit", 1000) or 1000)
+    # 2026-11-15 (Fable round 7, A-4): the breaker must gate this loop's
+    # ENTRY too — the loop calls _call_bounded directly, so after a full-ring
+    # failure each paginated find still burned one 60s node attempt before
+    # noticing. One bounded sweep per process, then silence.
+    if _HE_RING_DEAD[0]:
+        raise RuntimeError(
+            "HE RPC: the whole node ring already failed this process "
+            "(circuit breaker) — not retrying")
     last_err: Exception | None = None
     for _ in range(len(HE_NODES)):
         with _HE_LOCK:
@@ -443,23 +451,39 @@ class PriceEngine:
         self.market_liquidity: Dict[str, dict] = {}
         self._loaded = False
 
-    def _load_token_precisions(self):
-        """Load token precision from Hive Engine tokens table."""
-        tokens = [
-            "ALIVE", "HEARTBEAT", "BBH", "POB", "CENT", "PHOTO", "PIZZA", 
+    def _load_token_precisions(self, extra_symbols=None):
+        """Load token precision from the HE tokens table, BATCHED ($in).
+
+        2026-11-15 (Fable round 7, JOB B): the hardcoded 16-symbol list left
+        TRIBE, PEPE, PEPENTROPY (and any future destination) precision-unknown
+        — round_amount refused, plan_idle_deploy refused, and the ladder's
+        TOP destination could never deploy. The loader now takes any symbol
+        set: the bootstrap list below, PLUS every token discovered in the
+        loaded pools, the managed targets, and the caller's extras — one $in
+        query instead of one call per symbol. Still fail-closed downstream:
+        a symbol the chain does not know simply stays unknown.
+        """
+        symbols = set(extra_symbols or [])
+        symbols.update([
+            "ALIVE", "HEARTBEAT", "BBH", "POB", "CENT", "PHOTO", "PIZZA",
             "BEE", "HSBIDAO", "PIXYDUST", "UNICOIN", "SWAP.HIVE", "HIVE",
             "PSX", "DEC", "WEED"
-        ]
-        for sym in tokens:
-            try:
-                raw = he("find", {
-                    "contract": "tokens", "table": "tokens",
-                    "query": {"symbol": sym}, "limit": 1
-                })
-                if raw:
-                    self.token_precisions[sym] = raw[0].get("precision", 8)
-            except Exception:
-                pass
+        ])
+        symbols -= set(self.token_precisions)   # already known: skip
+        if not symbols:
+            return
+        try:
+            rows = he("find", {
+                "contract": "tokens", "table": "tokens",
+                "query": {"symbol": {"$in": sorted(symbols)}},
+                "limit": 1000
+            }) or []
+            for row in rows:
+                sym = row.get("symbol")
+                if sym and row.get("precision") is not None:
+                    self.token_precisions[sym] = int(row["precision"])
+        except Exception:
+            pass
         # Defaults for tokens not in the list
         defaults = {
             "SWAP.HIVE": 8, "HIVE": 3, "HBD": 3,
@@ -551,7 +575,19 @@ class PriceEngine:
                 )
             except Exception:
                 continue
-        
+
+        # 2026-11-15 (Fable round 7, JOB B): SECOND precision pass — every
+        # token the loaded pools, the managed targets, and the wallet can
+        # touch. The bootstrap list alone left the ladder's top destination
+        # (SWAP.HIVE:TRIBE) precision-unknown and undeployable.
+        _discovered = set()
+        for _p in self.pools.values():
+            _discovered.add(_p.base)
+            _discovered.add(_p.quote)
+        for _pair in TARGET_POOLS:
+            _discovered.update(_pair.split(":"))
+        self._load_token_precisions(_discovered)
+
         # ===== Build USD price map via BFS from anchor tokens =====
         # ANCHOR: Use the SWAP.HIVE:SWAP.HBD pool as the live price oracle
         # This gives us the market-derived HIVE price, not the internal witness rate

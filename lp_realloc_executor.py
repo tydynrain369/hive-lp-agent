@@ -627,14 +627,24 @@ def _size_deposit_stage(agent, dest_pool, budget_usd):
 
 
 def _staged_deposit_outstanding():
-    """Timestamp+pool of the most recent remove_and_stage whose deposit was
-    never implemented (i.e. the stage is still the terminal state), or None.
-    Backlog bound (Fable round 6, triage item 6): refuse new removals while
-    a staged deposit sits unconsumed. Unreadable log = no evidence of a
-    stage = the gate stays OPEN (removals are themselves capped and
-    verified; an unreadable ledger must not freeze the agent)."""
+    """(timestamp, pool) of the most recent BROADCAST remove_and_stage whose
+    stage has not been consumed, or None.
+
+    2026-11-15 (Fable round 7, A-12): round 6's matcher counted ANY
+    remove_and_stage row — dry-runs and failed broadcasts latched the gate
+    too, and nothing could ever clear it (a permanent latch, not a bound).
+    Now: only a row whose REMOVAL actually broadcast latches; a later
+    ``{"type": "stage_consumed", ...}`` record clears the latch — the
+    operator appends one to REALLOC_LOG when the staged balance is
+    consumed/rebalanced by hand. The stage is terminal state by design
+    (the deposit half of Leg B is not implemented, and the from-idle
+    deploy spends only NEW SWAP.HIVE — it cannot consume released
+    tokens). Unreadable log = no evidence of a stage = the gate stays
+    OPEN (removals are themselves capped and verified; an unreadable
+    ledger must not freeze the agent).
+    """
     try:
-        last = None
+        staged = None
         with open(REALLOC_LOG) as fh:
             for line in fh:
                 line = line.strip()
@@ -644,10 +654,16 @@ def _staged_deposit_outstanding():
                     row = json.loads(line)
                 except ValueError:
                     continue
+                if row.get("type") == "stage_consumed":
+                    staged = None
+                    continue
                 plan = row.get("plan") or {}
-                if plan.get("action") == "remove_and_stage":
-                    last = (row.get("timestamp"), plan.get("from_pool"))
-        return last
+                removal = row.get("removal")
+                if (plan.get("action") == "remove_and_stage"
+                        and isinstance(removal, dict)
+                        and removal.get("status") == "broadcast"):
+                    staged = (row.get("timestamp"), plan.get("from_pool"))
+        return staged
     except OSError:
         return None
 
@@ -669,12 +685,14 @@ def plan_reallocation(agent, decision, advisory=None, allow_challenge=False):
     if src == dst:
         return {"action": "none", "reason": "source and destination are the same"}
 
-    # --- BACKLOG BOUND (2026-11-15, Fable round 6 triage item 6) ----------
-    # A completed remove_and_stage leaves the released capital STAGED (the
-    # deposit half of Leg B is deliberately not implemented). Removing more
-    # while a staged deposit sits unconsumed stacks stranded positions and
-    # widens the manual-rebalance surface. One outstanding stage is the
-    # bound; consuming it (manual act or ladder deploy) clears the gate.
+    # --- BACKLOG BOUND (2026-11-15, Fable round 6 triage item 6; v2 round 7)
+    # A BROADCAST remove_and_stage leaves the released capital STAGED (the
+    # deposit half of Leg B is deliberately not implemented, and the
+    # from-idle deploy spends only new SWAP.HIVE — it cannot consume the
+    # stage). Removing more while a staged balance sits unconsumed stacks
+    # stranded positions. One outstanding stage is the bound; the operator
+    # clears it by appending a {"type": "stage_consumed"} record to
+    # REALLOC_LOG once the balance is rebalanced by hand.
     _outstanding = _staged_deposit_outstanding()
     if _outstanding:
         return {"action": "blocked",
@@ -739,9 +757,13 @@ def plan_reallocation(agent, decision, advisory=None, allow_challenge=False):
     # ANY position one action can move. Operator-set gate for cap raises.
     if (capped_value / value) * 100.0 > MAX_REMOVAL_PCT_PER_ACTION:
         capped_value = value * (MAX_REMOVAL_PCT_PER_ACTION / 100.0)
-        cap_note = (cap_note or "removal exceeds the "
-                    f"{MAX_REMOVAL_PCT_PER_ACTION:.0f}% per-action ceiling; "
-                    "proportionally reduced")
+        # 2026-11-15 (Fable round 7, C-11): BOTH ceilings must surface —
+        # the old `cap_note or ...` hid the pct ceiling whenever the USD
+        # note already existed.
+        _pct_note = (f"removal exceeds the "
+                     f"{MAX_REMOVAL_PCT_PER_ACTION:.0f}% per-action "
+                     f"ceiling; proportionally reduced")
+        cap_note = (cap_note + "; " + _pct_note) if cap_note else _pct_note
 
     # Percentage form required by the Hive-Engine contract: sharesOut is a
     # PERCENTAGE of the position (0-100, max 3dp), not an absolute count.
@@ -1054,7 +1076,8 @@ def plan_idle_deploy(agent, decision, advisory=None):
                          + str(advisory.get("reason"))[:200])
         return out
     if _idle_deploy_throttled():
-        out["reason"] = "already deployed from idle today (throttle)"
+        out["reason"] = ("already deployed from idle within the window "
+                         f"({IDLE_DEPLOY_MIN_INTERVAL_HOURS:.0f}h throttle)")
         return out
 
     # the deployable budget: the actual SWAP.HIVE idle, capped
@@ -1246,8 +1269,8 @@ def execute_idle_deploy(agent, plan, allow_execute):
     # the USD floor even evaluated, so the agent could never deploy at any
     # price. The real requirement is just "not a degenerate swap": below
     # 0.001 HIVE a marketpools swap produces a min_amount_out of zero and
-    # the contract rejects it. When hive_px is known the USD floor above
-    # (line 789) already covers this; this is the px-less fallback.
+    # the contract rejects it. When hive_px is known the USD floor in
+    # plan_idle_deploy already covers this; this is the px-less fallback.
     if budget_hive <= 0.001:
         plan["executed"] = False
         plan["reason"] = f"budget_hive {budget_hive:.6f} too small"
@@ -1325,7 +1348,19 @@ def execute_idle_deploy(agent, plan, allow_execute):
     _cap = float(os.environ.get("LP_TEST_MAX_USD", "0.05"))
     _exp_amts = {}
     for _side, _tok, _pair in _swap_sides:
-        _b, _q = _ratio(_pair)
+        # 2026-11-15 (Fable round 7, C-9c): _ratio returns None when the pool
+        # row vanishes between the routing check and here — the tuple unpack
+        # crashed on it before the not-check could speak.
+        _r = _ratio(_pair)
+        if not _r:
+            plan["executed"] = False
+            plan["reason"] = (f"pre-flight: pool {_pair} row vanished during "
+                              f"the add simulation — refusing before any "
+                              f"broadcast")
+            _log({"action": "deploy_idle", "status": "pre-flight-refused",
+                  "reason": plan["reason"], "live": True})
+            return plan
+        _b, _q = _r
         if not _b or not _q:
             plan["executed"] = False
             plan["reason"] = (f"pre-flight: pool {_pair} unreadable for the "
@@ -1352,7 +1387,7 @@ def execute_idle_deploy(agent, plan, allow_execute):
         return plan
     _exp_usd = sum(_exp_amts.get(t, 0.0) * float(_px[t])
                    for t in (base, quote))
-    if _exp_usd > _cap:
+    if _exp_usd > _cap + 1e-9:   # +1e-9: float noise at budget==cap is not an overage
         plan["executed"] = False
         plan["reason"] = (f"pre-flight: simulated add values at "
                           f"${_exp_usd:.4f} vs the ${_cap} cap — refusing "
@@ -1399,7 +1434,11 @@ def execute_idle_deploy(agent, plan, allow_execute):
         pair = _pair_for(IN, out_sym)
         if not pair:
             return False, None, f"no pool {IN}/{out_sym}"
-        b, q = _ratio(pair)
+        # 2026-11-15 (Fable round 7, C-9c): None row = refusal, not a crash
+        _rq = _ratio(pair)
+        if not _rq:
+            return False, None, f"pool {pair} row vanished mid-deploy"
+        b, q = _rq
         if not b or not q:
             return False, None, f"pool {pair} unreadable"
         # out-per-hive: whichever side is SWAP.HIVE is the input

@@ -11,6 +11,15 @@ class PriceTests(unittest.TestCase):
     def engine(self, rows):
         pe=m.PriceEngine()
         def rpc(method,params):
+            # 2026-11-15 (round 7, JOB B): the precision loader now batches
+            # with a $in query — answer it with the fixture rows. ALIVE keeps
+            # precision 2 here (the original 2026-10-22 point: a chain-
+            # reported precision must beat the defaults dict), alongside A.
+            q = params.get('query') or {}
+            if isinstance(q.get('symbol'), dict):
+                asked = set(q['symbol'].get('$in', []))
+                return [{'symbol': s, 'precision': 2}
+                        for s in ('A', 'ALIVE') if s in asked]
             return rows if params['table']=='pools' else [{'symbol':'A','precision':2}]
         with patch.object(m,'he',side_effect=rpc): pe.load_all()
         return pe

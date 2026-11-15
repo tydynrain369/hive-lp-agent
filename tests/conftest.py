@@ -30,28 +30,35 @@ if _SCRIPTS_DIR not in sys.path:
 
 _TMP = tempfile.mkdtemp(prefix="lp-suite-state-")
 
-_SEALED = {
-    "lp_ladder": ("LADDER_STATE_PATH", os.path.join(_TMP, "ladder_state.json")),
-    "lp_executor_test": ("EXECUTIONS_LOG", os.path.join(_TMP, "test_executions.jsonl")),
-    "cron_lp_agent": ("REPORTS_DIR", os.path.join(_TMP, "reports")),
-    "liquidity_agent_v2": ("HE_NODE_STATE_PATH", os.path.join(_TMP, "he_node.json")),
-    # 2026-11-15 (Fable round 6, F2 follow-up): the audit found six MORE
-    # state paths the original seal missed. All default-paths audited and
-    # sealed (the rule: a module with a state path joins the seal in the
-    # same change — this is that change, late).
-    "lp_realloc_executor": ("REALLOC_LOG", os.path.join(_TMP, "reallocations.jsonl")),
-    "lp_realloc_executor:2": ("IDLE_DEPLOY_THROTTLE", os.path.join(_TMP, "LAST_IDLE_DEPLOY")),
-    "lp_decision": ("DECISIONS_DIR", os.path.join(_TMP, "decisions")),
-    "lp_fee_evidence": ("DEFAULT_SNAPSHOT_STORE", os.path.join(_TMP, "fee_snapshots.jsonl")),
-    "lp_recommendation": ("FEE_SNAPSHOTS_PATH", os.path.join(_TMP, "fee_snapshots.jsonl")),
-    "lp_test_tracker": ("DB_PATH", os.path.join(_TMP, "lp_tests.db")),
+# 2026-11-15 (Fable round 7, A-2): restructured to (module, attr, path)
+# TUPLES. The dict keyed one attr per module, and the ":2" keys I invented
+# for a second path were import failures the seal silently swallowed —
+# IDLE_DEPLOY_THROTTLE was never sealed. lp_test_tracker's DB_PATH joined
+# with a def-time default argument that the setattr could not touch (the
+# ladder bug again) — fixed at the SOURCE to resolve at call time.
+# cron_lp_agent.FEE_SNAPSHOT_STORE is the path the cron's fee pass actually
+# writes through and is now sealed too.
+_SEALED = [
+    ("lp_ladder", "LADDER_STATE_PATH", os.path.join(_TMP, "ladder_state.json")),
+    ("lp_executor_test", "EXECUTIONS_LOG", os.path.join(_TMP, "test_executions.jsonl")),
+    ("cron_lp_agent", "REPORTS_DIR", os.path.join(_TMP, "reports")),
+    ("cron_lp_agent", "FEE_SNAPSHOT_STORE", os.path.join(_TMP, "fee_snapshots.jsonl")),
+    ("liquidity_agent_v2", "HE_NODE_STATE_PATH", os.path.join(_TMP, "he_node.json")),
+    ("lp_realloc_executor", "REALLOC_LOG", os.path.join(_TMP, "reallocations.jsonl")),
+    ("lp_realloc_executor", "IDLE_DEPLOY_THROTTLE", os.path.join(_TMP, "LAST_IDLE_DEPLOY")),
+    ("lp_decision", "DECISIONS_DIR", os.path.join(_TMP, "decisions")),
+    ("lp_fee_evidence", "DEFAULT_SNAPSHOT_STORE", os.path.join(_TMP, "fee_snapshots.jsonl")),
+    ("lp_recommendation", "FEE_SNAPSHOTS_PATH", os.path.join(_TMP, "fee_snapshots.jsonl")),
+    ("lp_test_tracker", "DB_PATH", os.path.join(_TMP, "lp_tests.db")),
     # NOTE (round 6 audit): lp_lifecycle.json has NO module-level path
     # attribute — it resolves `os.path.join(os.path.dirname(__file__), ...)
     # at CALL time, i.e. it writes next to the LIVE SOURCE. Nothing in the
     # suite currently writes it (read-only filter use); if a test ever
     # writes lifecycle state, that call site must grow a path parameter
     # FIRST and then join this seal.
-}
+]
+
+_SEALED_APPLIED = []   # (module, attr) pairs the seal actually repointed
 
 
 def _seal():
@@ -60,13 +67,16 @@ def _seal():
     Unconditional: no test in this suite legitimately wants the live
     default; tests needing a specific path patch it themselves.
     """
-    for mod_name, (attr, sealed_path) in _SEALED.items():
+    applied = []
+    for mod_name, attr, sealed_path in _SEALED:
         try:
             mod = importlib.import_module(mod_name)
         except Exception:
             continue           # module not importable: not the seal's job
         if hasattr(mod, attr):
             setattr(mod, attr, sealed_path)
+            applied.append((mod_name, attr))
+    _SEALED_APPLIED[:] = applied
 
 
 _seal()

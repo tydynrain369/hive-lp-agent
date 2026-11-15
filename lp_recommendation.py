@@ -474,9 +474,17 @@ def threshold_analysis(eco, pool, position):
         return {"computable": False,
                 "reason": "no measured fee accrual to scale from"}
     if fee_usd <= 0:
-        return {"computable": True, "already_above_threshold": True,
+        # 2026-11-15 (Fable round 7, C-8; Opus flagged 2026-11-13): measured
+        # ZERO fees is the opposite of "already earning" — the old
+        # already_above_threshold=True made the verdict "hold, position is
+        # earning" for a pool that earns NOTHING and unreachable the
+        # zombie-exit branch. Honest: not above the threshold, and the grow
+        # multiple (DUST/0) is undefined-infinite — surfaced as None.
+        return {"computable": True, "already_above_threshold": False,
                 "current_value_usd": val,
-                "note": "fees not yet positive in the measured window"}
+                "multiple_to_1e6_fee_threshold": None,
+                "note": ("measured ZERO fees in the window — the position "
+                         "earns nothing; grow multiple undefined (infinite)")}
     mult = DUST_USD / fee_usd
     return {
         "computable": True,
@@ -491,6 +499,10 @@ def threshold_analysis(eco, pool, position):
 
 
 def classify(fee_apr, rewards_summary):
+    # 2026-11-15 (Fable round 7, C-11): UNMEASURED (None) is not ZOMBIE. A
+    # None fee APR means we could not measure — calling that "zombie" put a
+    # "confidence: high" exit recommendation on pools whose fees we simply
+    # could not see. Only a MEASURED low APR with no rewards is a zombie.
     n = rewards_summary["reward_tokens"]
     has_notable = any(v >= MIN_NOTABLE_DAILY_REWARD for v in rewards_summary["notable"].values())
     if fee_apr is not None and fee_apr >= MIN_FEE_APR_FOR_PRODUCTIVE and n > 0:
@@ -499,7 +511,9 @@ def classify(fee_apr, rewards_summary):
         return "fee-only"
     if n > 0 and has_notable:
         return "reward-productive"
-    if n == 0 and (fee_apr is None or fee_apr < MIN_FEE_APR_FOR_PRODUCTIVE):
+    if fee_apr is None and n == 0:
+        return "unmeasured"       # exit requires MEASURED evidence, not a gap
+    if n == 0 and fee_apr is not None and fee_apr < MIN_FEE_APR_FOR_PRODUCTIVE:
         return "zombie"
     return "low-activity"      # has rewards but all tiny
 

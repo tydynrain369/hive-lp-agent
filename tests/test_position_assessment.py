@@ -29,6 +29,13 @@ class AssessmentTests(unittest.TestCase):
             rows = [self.data[params['contract'] + '_params']]
         else:
             rows = self.data[table]
+        # 2026-11-15 (round 7, C-10): the adapter no longer sends an offset —
+        # he() OWNS pagination and returns the whole table. The fake stands
+        # in for he(), so no offset in the params means the full table; an
+        # explicit offset (he()'s own internal paging, exercised by
+        # TestAssessThroughRealHe against the real he()) still slices.
+        if 'offset' not in params:
+            return rows
         return rows[params['offset']:params['offset'] + params['limit']]
 
     def test_adapter_matches_pure_replay(self):
@@ -61,7 +68,11 @@ class AssessmentTests(unittest.TestCase):
         with patch('lp_position_assessment.decide_topup_vs_keep', return_value={'comparisons': []}) as decide:
             assess_positions(self.rpc, self.data['account'])
         self.assertEqual(decide.call_args.args[0]['participants'], self.data['participants'])
-        self.assertTrue(any(p.get('offset', 0) >= 1000 for _, p in self.calls))
+        # 2026-11-15 (round 7, C-10): the ADAPTER no longer sends offsets —
+        # he() owns pagination and keeps one table on one node. The WIRE-level
+        # pin (offsets advance 0/1000/2000, no offset=0 loop) lives in
+        # TestAssessThroughRealHe, which drives the REAL he() over a 2500-row
+        # fake transport.
 
     def test_cron_wires_joint_allocation_evidence_into_the_selector(self):
         """2026-11-03: the evidence pipeline was dormant. assess_positions

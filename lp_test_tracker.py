@@ -64,13 +64,17 @@ def _iso(dt):
 
 
 class LPTestTracker:
-    def __init__(self, config=None, db_path=DB_PATH):
+    # 2026-11-15 (Fable round 7, A-2): db_path MUST NOT be a default
+    # argument — def-time binding defeated the conftest seal exactly like
+    # the round-6 ladder bug, and test_cron_dry_run's walk through main()
+    # opened the LIVE lp_tests.db on every suite run. Resolve at call time.
+    def __init__(self, config=None, db_path=None):
+        self.db_path = db_path if db_path is not None else DB_PATH
         self.config = dict(DEFAULTS)
         if config:
             self.config.update(config)
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
-        self.db_path = db_path
-        self.conn = sqlite3.connect(db_path)
+        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+        self.conn = sqlite3.connect(self.db_path)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
         self.conn.commit()
