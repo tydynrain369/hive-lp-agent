@@ -16,6 +16,7 @@ import io
 import json
 import os
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -263,6 +264,82 @@ class TestHeTransportFidelity(unittest.TestCase):
             out = LAV2.he("find", {"contract": "c", "table": "t",
                                    "query": {}, "limit": 3})
         self.assertEqual(out, {"weird": True})
+
+
+class TestHeNodeRotation(unittest.TestCase):
+    """2026-11-14 (Tydyn's call): api.hive-engine.com black-holes reads for
+    hours; api2.hive-engine.com is the OFFICIAL mirror. he() must rotate to
+    the next official endpoint on failure, stick to the one that answered,
+    and persist the choice across ticks. Probed with REAL POSTs: both
+    official endpoints answered in 0.8s while the primary was wedged."""
+
+    def setUp(self):
+        import liquidity_agent_v2 as LAV2
+        self.LAV2 = LAV2
+        self._idx = LAV2._HE_NODE_IDX[0]
+        LAV2._HE_NODE_IDX[0] = 0
+        LAV2.HE_NODE_STATE_PATH = os.path.join(
+            tempfile.mkdtemp(), "he_node.json")
+
+    def tearDown(self):
+        self.LAV2._HE_NODE_IDX[0] = self._idx
+
+    def _fake_transport(self, calls):
+        """Fail (hang-shaped: slow) on node 0, answer on node 1."""
+        def fake(req, timeout=None):
+            calls.append(req.full_url)
+            if "api.hive-engine.com" in req.full_url:
+                raise TimeoutError("read timed out")   # what a wedged edge does
+            return io.BytesIO(json.dumps(
+                {"jsonrpc": "2.0", "id": 1,
+                 "result": {"distTickHours": 1}}).encode())
+        return fake
+
+    def test_rotates_to_the_mirror_and_persists(self):
+        calls = []
+        LAV2 = self.LAV2
+        with patch.object(LAV2, "urlopen", self._fake_transport(calls)), \
+             patch.object(LAV2, "time") as tmod:
+            tmod.sleep = lambda s: None
+            out = LAV2.he("findOne", {"contract": "distribution",
+                                      "table": "params", "query": {}})
+        self.assertEqual(out.get("distTickHours"), 1)
+        # node 0 was tried first (with its fast-fail retries — the inner
+        # loop only matters for FAST failures; a hang is abandoned at the
+        # 60s join before any retry), then the mirror answered
+        self.assertIn("api.hive-engine.com", calls[0])
+        self.assertIn("api2.hive-engine.com", calls[-1])
+        # sticky index advanced to the mirror and persisted for next tick
+        self.assertEqual(LAV2._HE_NODE_IDX[0], 1)
+        with open(LAV2.HE_NODE_STATE_PATH) as fh:
+            self.assertEqual(json.load(fh)["index"], 1)
+
+    def test_sticky_memory_starts_on_the_last_healthy_node(self):
+        calls = []
+        LAV2 = self.LAV2
+        LAV2._HE_NODE_IDX[0] = 1     # mirror answered last tick
+        def fake(req, timeout=None):
+            calls.append(req.full_url)
+            return io.BytesIO(json.dumps(
+                {"jsonrpc": "2.0", "id": 1,
+                 "result": {"ok": True}}).encode())
+        with patch.object(LAV2, "urlopen", fake):
+            out = LAV2.he("findOne", {"contract": "c", "table": "t",
+                                      "query": {}})
+        self.assertEqual(out.get("ok"), True)
+        self.assertEqual(len(calls), 1)          # no wasted call to the wedged primary
+        self.assertIn("api2.hive-engine.com", calls[0])
+
+    def test_both_nodes_down_raises_bounded(self):
+        LAV2 = self.LAV2
+        def fake(req, timeout=None):
+            raise TimeoutError("read timed out")
+        with patch.object(LAV2, "urlopen", fake), \
+             patch.object(LAV2, "time") as tmod:
+            tmod.sleep = lambda s: None
+            with self.assertRaises(RuntimeError):
+                LAV2.he("findOne", {"contract": "c", "table": "t",
+                                    "query": {}})
 
 
 class TestUnknownAprHolds(unittest.TestCase):

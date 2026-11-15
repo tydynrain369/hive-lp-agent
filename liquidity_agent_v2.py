@@ -20,6 +20,47 @@ logging.getLogger("urllib3").setLevel(logging.ERROR)
 # ─── Config ──────────────────────────────────────────────────────────
 HIVE_RPC = "https://api.deathwing.me"
 HE_RPC = "https://api.hive-engine.com/rpc/contracts"
+
+# 2026-11-14 (Tydyn's call): the primary HE endpoint black-holes reads for
+# hours at a stretch — api2.hive-engine.com is the OFFICIAL mirror and
+# answered a real contracts/find POST in 0.8s while the primary was wedged.
+# he() rotates: stick to the last node that answered, advance on failure,
+# persist the choice across ticks. Both entries verified with a REAL POST
+# (a TCP connect proves nothing — these edges tarpit non-browser-shaped
+# raw requests, so only the real client path is a valid health test).
+HE_NODES = ["https://api.hive-engine.com", "https://api2.hive-engine.com"]
+HE_NODE_STATE_PATH = os.path.expanduser("~/.hermes/lp_tests/he_node.json")
+
+
+def _he_node_start():
+    """Index of the last node that answered (cross-tick sticky memory)."""
+    try:
+        with open(HE_NODE_STATE_PATH) as fh:
+            i = int(json.load(fh).get("index", 0))
+        if 0 <= i < len(HE_NODES):
+            return i
+    except Exception:
+        pass
+    return 0
+
+
+_HE_NODE_IDX = [_he_node_start()]   # mutable box: process-wide sticky index
+
+
+def _he_node_rotate():
+    _HE_NODE_IDX[0] = (_HE_NODE_IDX[0] + 1) % len(HE_NODES)
+
+
+def _he_node_persist():
+    try:
+        os.makedirs(os.path.dirname(HE_NODE_STATE_PATH), exist_ok=True)
+        tmp = HE_NODE_STATE_PATH + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump({"index": _HE_NODE_IDX[0],
+                       "node": HE_NODES[_HE_NODE_IDX[0]]}, fh)
+        os.replace(tmp, HE_NODE_STATE_PATH)
+    except Exception:
+        pass   # memory is an optimization; rotation works without it
 # 2026-10-22: the account NAME for public reads. It is already public in
 # this codebase (docstring, load_balances query) and in our own artifacts
 # (fee_snapshots rows); only the KEYS are secret and they stay in the vault.
@@ -143,13 +184,13 @@ def he(method: str, params: dict):
     payload = {"jsonrpc": "2.0", "method": method,
                "params": dict(params), "id": 1}
 
-    def _call(p):
+    def _call(base, p):
         data = json.dumps(p).encode()
         resp = None
         last_err = None
         for attempt in range(3):
             try:
-                req = Request(HE_RPC, data=data,
+                req = Request(base + "/rpc/contracts", data=data,
                               headers={"Content-Type": "application/json"})
                 with urlopen(req, timeout=30) as r:
                     resp = json.load(r)
@@ -174,9 +215,9 @@ def he(method: str, params: dict):
     import threading
     _CALL_TIMEOUT_S = 60.0
 
-    def _call_bounded(p):
+    def _call_bounded(base, p):
         box = {}
-        t = threading.Thread(target=lambda: box.setdefault("r", _call(p)),
+        t = threading.Thread(target=lambda: box.setdefault("r", _call(base, p)),
                              daemon=True)
         t.start()
         t.join(timeout=_CALL_TIMEOUT_S)
@@ -188,14 +229,38 @@ def he(method: str, params: dict):
             raise RuntimeError("HE RPC call failed before returning")
         return box["r"]
 
+    def _rpc_rotated(p):
+        """One RPC against the sticky node; rotate to the next on failure.
+
+        The 2026-11-14 black-hole windows are per-node: a wedged edge
+        accepts TCP+TLS and never answers. Advance the sticky index and
+        try the next OFFICIAL endpoint; persist only on success. Worst
+        case (both nodes wedged) this raises after len(HE_NODES) bounded
+        tries — the caller's fail-closed path takes over.
+        """
+        last_err = None
+        for _ in range(len(HE_NODES)):
+            base = HE_NODES[_HE_NODE_IDX[0]]
+            try:
+                resp = _call_bounded(base, p)
+                _he_node_persist()   # sticky: remember the node that answered
+                return resp
+            except Exception as e:
+                last_err = e
+                logging.getLogger(__name__).warning(
+                    "HE node %s failed (%s) — rotating to next",
+                    base, type(e).__name__)
+                _he_node_rotate()
+        raise last_err if last_err else RuntimeError("HE RPC: no nodes")
+
     if method != "find":
-        return _call_bounded(payload).get("result") or {}
+        return _rpc_rotated(payload).get("result") or {}
     page_limit = int(params.get("limit", 1000) or 1000)
     rows: list = []
     offset = 0
     while True:
         payload["params"]["offset"] = offset
-        resp = _call_bounded(payload)
+        resp = _rpc_rotated(payload)
         page = resp.get("result", []) or []
         if not isinstance(page, list):
             return page          # contract changed shape: never explode keys

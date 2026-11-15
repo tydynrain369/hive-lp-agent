@@ -34,6 +34,7 @@ _SEALED = {
     "lp_ladder": ("LADDER_STATE_PATH", os.path.join(_TMP, "ladder_state.json")),
     "lp_executor_test": ("EXECUTIONS_LOG", os.path.join(_TMP, "test_executions.jsonl")),
     "cron_lp_agent": ("REPORTS_DIR", os.path.join(_TMP, "reports")),
+    "liquidity_agent_v2": ("HE_NODE_STATE_PATH", os.path.join(_TMP, "he_node.json")),
 }
 
 
