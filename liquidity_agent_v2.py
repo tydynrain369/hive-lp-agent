@@ -398,8 +398,8 @@ class PoolData:
     quote_reserve: float
     base_price: float
     quote_price: float
-    volume_24h: float
-    fees_24h: float
+    volume_lifetime: float
+    fees_lifetime: float
     apr: float
     liquidity_usd: float
     total_shares: float = 0.0
@@ -407,7 +407,7 @@ class PoolData:
     quote_quantity: float = 0.0
     # 2026-10-17: raw 24h volumes in each side's own token units (contract
     # fields baseVolume/quoteVolume). Kept raw so the USD pass can convert
-    # honestly once prices exist (volume_24h itself is recomputed there).
+    # honestly once prices exist (volume_lifetime itself is recomputed there).
     base_volume: float = 0.0
     quote_volume: float = 0.0
 
@@ -489,23 +489,6 @@ class PriceEngine:
         import math
         return math.floor(amount * 10 ** prec) / 10 ** prec
 
-    def _get_live_hive_price(self) -> float:
-        """Query live HIVE price from witness feed (HIVE:HBD ratio)."""
-        try:
-            from nectar import Hive
-            h = Hive()
-            hf = h.get_feed_history()
-            current = hf.get('current_median_history', {})
-            base = current.get('base', {})
-            quote = current.get('quote', {})
-            base_amt = int(base.get('amount', 0)) / (10 ** base.get('precision', 3))
-            quote_amt = int(quote.get('amount', 0)) / (10 ** quote.get('precision', 3))
-            # HIVE price = HBD_amount / HIVE_amount
-            hive_price = quote_amt / base_amt if base_amt > 0 else 0.05
-            return max(hive_price, 0.01)  # sanity floor
-        except Exception:
-            return 0.05  # fallback
-
     def load_all(self):
         """Load all pools and compute prices from reserves, anchored to SWAP.HIVE."""
         if self._loaded:
@@ -558,7 +541,7 @@ class PriceEngine:
                     pool_id=pool_id, base=base, quote=quote,
                     base_reserve=base_reserve, quote_reserve=quote_reserve,
                     base_price=base_price_in_quote, quote_price=quote_price_in_base,
-                    volume_24h=volume, fees_24h=fees, apr=apr,
+                    volume_lifetime=volume, fees_lifetime=fees, apr=apr,
                     liquidity_usd=base_reserve * base_price_in_quote + quote_reserve * quote_price_in_base,
                     total_shares=float(p.get("totalShares", 0)),
                     base_quantity=base_reserve,
@@ -603,8 +586,11 @@ class PriceEngine:
         
         # ===== Derive token prices from the deepest-liquidity pool vs an already-priced token =====
         # Strategy: for each unknown token, find ALL pools containing it where the OTHER side
-        # is already priced. Compute the token's USD price from reserve ratios. Take the
-        # liquidity-weighted median across all such pools to resist outliers/junk pools.
+        # is already priced. Compute the token's USD price from reserve ratios. Commit the
+        # figure from the DEEPEST-known-side pool (deepest-liquidity, not a
+        # median — the pre-2026-10-22 last-write-wins loop was
+        # iteration-order dependent; now order-independent, pinned by
+        # test_order_independent_deeper_known_side).
         #
         # For a pool (A, B) with reserves (rA, rB):
         #   A's implied price = (rB / rA) * price(B)   [if B is known]
@@ -745,7 +731,7 @@ class PriceEngine:
             print(f"  PriceEngine: {len(self.pools)} pools, {len(self.token_prices)} tokens priced")
 
         # ===== SECOND PASS (2026-10-17): honest USD liquidity/volume/APR =====
-        # The first pass computed liquidity_usd and volume_24h BEFORE any USD
+        # The first pass computed liquidity_usd and volume_lifetime BEFORE any USD
         # price existed, as base_reserve * base_price_in_quote + quote_reserve *
         # quote_price_in_base — a sum of MIXED TOKEN UNITS (CENT-units plus
         # TRIBE-units), never USD. Downstream consumers read garbage:
@@ -766,19 +752,19 @@ class PriceEngine:
             if _b_usd > 0 and _q_usd > 0:
                 _pool.liquidity_usd = (_pool.base_reserve * _b_usd
                                        + _pool.quote_reserve * _q_usd)
-                _pool.volume_24h = (_pool.base_volume * _b_usd
+                _pool.volume_lifetime = (_pool.base_volume * _b_usd
                                     + _pool.quote_volume * _q_usd)
                 # 2026-11-14 (Fable round 5): this second pass still hardcoded
                 # the pre-fee-fix 0.003, overwriting the SWAP_FEE (0.25%)
                 # first-pass value for every priced pool. One fee constant.
-                _pool.fees_24h = _pool.volume_24h * SWAP_FEE
-                _pool.apr = ((_pool.fees_24h / _pool.liquidity_usd)
+                _pool.fees_lifetime = _pool.volume_lifetime * SWAP_FEE
+                _pool.apr = ((_pool.fees_lifetime / _pool.liquidity_usd)
                              * 365 * 100) if _pool.liquidity_usd > 0 else 0.0
                 _fixed += 1
             else:
                 _pool.liquidity_usd = 0.0
-                _pool.volume_24h = 0.0
-                _pool.fees_24h = 0.0
+                _pool.volume_lifetime = 0.0
+                _pool.fees_lifetime = 0.0
                 _pool.apr = 0.0
                 _unknown_tvl += 1
         if _unknown_tvl:
@@ -1006,7 +992,7 @@ class PoolAnalyzer:
         """Score pool 0-1 for LP attractiveness."""
         liq = pool.liquidity_usd
         apr = pool.apr
-        vol_liq = pool.volume_24h / liq if liq > 0 else 0
+        vol_liq = pool.volume_lifetime / liq if liq > 0 else 0
         
         # Liquidity score (0-1): want deep pools
         liq_score = min(liq / 10000, 1.0)
@@ -1119,49 +1105,13 @@ class ExecutionEngine:
         except Exception as e:              # never mask a trade — but be loud
             print(f"    !! LEDGER WRITE FAILED ({e}): {json.dumps(rec)[:400]}")
 
-    def add_liquidity(self, base: str, quote: str, base_amt: float, quote_amt: float) -> bool:
-        """Add liquidity to a pool."""
-        try:
-            from nectarengine.pool import LiquidityPool
-            
-            self._require_armed(f"add_liquidity {base}:{quote}")
-            lp = LiquidityPool(blockchain_instance=self.hive)
-            # Include max_deviation=1% tolerance to ensure contract acceptance
-            result = lp.add_liquidity(self.acct["account"], f"{base}:{quote}", base_amt, quote_amt, max_deviation=1)
-            self._log_broadcast("add_liquidity", result,
-                                {"pool": f"{base}:{quote}", "base_amt": base_amt, "quote_amt": quote_amt})
-            
-            if not result:
-                print(f"  ✗ Failed to add liquidity to {base}:{quote}")
-                return False
-            
-            print(f"  ✓ Added liquidity: {base_amt:.6f} {base} + {quote_amt:.6f} {quote}")
-            return True
-        except Exception as e:
-            print(f"  ✗ Add liquidity failed: {e}")
-            return False
-
-    def remove_liquidity(self, base: str, quote: str, lp_tokens: float) -> bool:
-        """Remove liquidity from a pool."""
-        try:
-            from nectarengine.pool import LiquidityPool
-
-            # 2026-11-13 (Claude review P0-12): this was the ONE broadcast
-            # method that skipped the chokepoint — its swap/add siblings both
-            # refuse unarmed. Same rule, no exceptions.
-            self._require_armed(f"remove_liquidity {base}:{quote}")
-            lp = LiquidityPool(blockchain_instance=self.hive)
-            result = lp.remove_liquidity(self.acct["account"], f"{base}:{quote}", lp_tokens)
-            
-            if not result:
-                print(f"  ✗ Failed to remove liquidity from {base}:{quote}")
-                return False
-            
-            print(f"  ✓ Removed {lp_tokens:.6f} LP tokens from {base}:{quote}")
-            return True
-        except Exception as e:
-            print(f"  ✗ Remove liquidity failed: {e}")
-            return False
+# 2026-11-15 (Fable round 6, triage item 5-cheap): ExecutionEngine's capless
+# add_liquidity/remove_liquidity are DELETED. No live callers remained (the
+# real paths are TestExecutor.remove_liquidity / the realloc executor, both
+# chokepointed and capped); remove_liquidity here never wrote the ledger and
+# took ABSOLUTE lp_tokens where the contract wants a PERCENTAGE — the exact
+# backwards-unit class that put us in the 08:20 incident. Dead capability is
+# attack surface: the only broadcast primitives left are chokepointed.
 
 # ─── Strategy Engine ────────────────────────────────────────────────
 

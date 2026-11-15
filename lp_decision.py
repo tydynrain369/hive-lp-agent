@@ -144,7 +144,10 @@ TOPUP_DILUTION_WEIGHT = 1.0
 # must be normalized accordingly). Named tunable per the standing rule:
 # 0 disables the term (pre-2026-10-10 behaviour).
 REWARD_PER_HIVE_WEIGHT = 1.0
-HIVE_USD_ASSUMED = 0.057
+# 2026-11-15 (Fable round 6, triage item 7): HIVE_USD_ASSUMED (0.057) is
+# DELETED. Every consumer now treats an unpriced HIVE as an UNKNOWN term
+# (None contributes nothing / the field is None) — a fabricated price in a
+# scoring term is exactly the anti-pattern the honest-pricing rounds removed.
 
 # --- priority-ladder viability weighting (2026-11-02, Tydyn's call) --------
 # The ladder ranks rungs by marginal rate (what the next dollar captures per
@@ -452,8 +455,9 @@ def decide(held_pools: list, reward_info: dict, fee_evidence: Optional[dict] = N
             _hive_usd = float(price_map.get("SWAP.HIVE")) or None
         except (TypeError, ValueError):
             _hive_usd = None
-    if not _hive_usd:
-        _hive_usd = HIVE_USD_ASSUMED
+    # 2026-11-15 (Fable round 6, triage item 7): the fabricated $0.057
+    # fallback is GONE. An unpriced HIVE means the USD terms it feeds are
+    # UNKNOWN (None) — never a made-up number.
     _rung_inputs = {}
 
     # 2026-10-05: pool lifecycle + operator/self-issued token filter.
@@ -759,13 +763,15 @@ def decide(held_pools: list, reward_info: dict, fee_evidence: Optional[dict] = N
                     # the old rph/HIVE_USD*100 (which treated APR as a daily
                     # rate) understated the term 365x, making the honest TVL
                     # fix alone look "still fee-dominant" when it was really
-                    # a second unit bug. 2026-11-14 (Fable round 5): prefer
-                    # the REAL HIVE price; the constant only as last resort.
-                    _hive_px = ((price_map or {}).get("SWAP.HIVE")
-                                or HIVE_USD_ASSUMED)
-                    _rph_apr_equiv = (_reward_per_hive * 365.0 / _hive_px) * 100.0
-                    score += (_rph_apr_equiv * REWARD_PER_HIVE_WEIGHT
-                              * FEE_APR_SCORE_WEIGHT)
+                    # a second unit bug. 2026-11-15 (Fable round 6, triage
+                    # item 7): the fabricated constant is GONE — with no real
+                    # price the term is INACTIVE (contributes nothing), never
+                    # a guessed rate.
+                    _hive_px = (price_map or {}).get("SWAP.HIVE")
+                    if _hive_px:
+                        _rph_apr_equiv = (_reward_per_hive * 365.0 / _hive_px) * 100.0
+                        score += (_rph_apr_equiv * REWARD_PER_HIVE_WEIGHT
+                                  * FEE_APR_SCORE_WEIGHT)
                 score *= _viability_factor(th)
                 # 2026-10-07: age-bonus dilution — a top-up into this pool
                 # costs part of its accumulated multiplier.
@@ -809,15 +815,14 @@ def decide(held_pools: list, reward_info: dict, fee_evidence: Optional[dict] = N
             # None (no TVL or unpriced rewards) contributes zero — the
             # pre-2026-10-10 score — never a fabricated number.
             if _reward_per_hive is not None and REWARD_PER_HIVE_WEIGHT > 0:
-                # 2026-11-14 (Fable round 5): the constant was used even when
-                # the REAL price was known — a fixed $0.057 against a real
-                # $0.0427 inflates the term ~33%. Real price when known;
-                # the documented constant only as last resort.
-                _hive_px = ((price_map or {}).get("SWAP.HIVE")
-                            or HIVE_USD_ASSUMED)
-                _rph_apr_equiv = (_reward_per_hive * 365.0 / _hive_px) * 100.0
-                score += (_rph_apr_equiv * REWARD_PER_HIVE_WEIGHT
-                          * FEE_APR_SCORE_WEIGHT)
+                # 2026-11-15 (Fable round 6, triage item 7): real price when
+                # known; with none, the term is INACTIVE — never the fabricated
+                # constant (it inflated the term ~33% at the real $0.0427).
+                _hive_px = (price_map or {}).get("SWAP.HIVE")
+                if _hive_px:
+                    _rph_apr_equiv = (_reward_per_hive * 365.0 / _hive_px) * 100.0
+                    score += (_rph_apr_equiv * REWARD_PER_HIVE_WEIGHT
+                              * FEE_APR_SCORE_WEIGHT)
             score *= _viability_factor(th)
             score *= _dil_blend
             if _expand_blocked_runway or _expand_blocked_exit:
@@ -978,7 +983,8 @@ def decide(held_pools: list, reward_info: dict, fee_evidence: Optional[dict] = N
             _rungs.append({
                 "pool": _p,
                 "rate0": _ri["rate0"],
-                "tvl_usd": (_tv * _hive_usd) if _tv is not None else None,
+                "tvl_usd": (_tv * _hive_usd)
+                if (_tv is not None and _hive_usd is not None) else None,
                 "deployed_usd": _LL.deployed_for(_state, _p),
             })
         _usable, ladder_excluded = _LL._clean_rungs(_rungs)

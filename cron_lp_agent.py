@@ -1078,7 +1078,13 @@ def main():
                     "ms": adv.get("ms"),
                     "model": adv.get("model"),
                     "possible_quantity_leak": adv.get("possible_quantity_leak"),
-                    "authority": "ADVISORY ONLY — no effect on the decision",
+                    # 2026-11-15 (Fable round 6, triage item 7): the old
+                    # "no effect" label was false for CHALLENGE —
+                    # plan_idle_deploy BLOCKS the from-idle deploy on a
+                    # CHALLENGE verdict. Honest authority text:
+                    "authority": ("ADVISORY ONLY — never edits the decision; "
+                                  "a CHALLENGE verdict blocks the from-idle "
+                                  "deploy path"),
                 }, fh, indent=2)
             os.replace(_stmp, sidecar)
             flag = "  <-- REVIEW" if adv.get("verdict") == "CHALLENGE" else ""

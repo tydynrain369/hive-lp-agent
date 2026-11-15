@@ -58,7 +58,11 @@ REWARDS = {
     "CENT:TRIBE": _mk_rewards(1800.0),
     "CENT:POOR": _mk_rewards(26.0),
 }
-PRICE_MAP = {"RICH": 0.001, "POORTOK": 0.001}
+# 2026-11-15 (Fable round 6, triage item 7): the fabricated HIVE_USD_ASSUMED
+# is deleted — the live rph term now uses price_map["SWAP.HIVE"] and is
+# INACTIVE when it is absent. These tests pin the term's arithmetic, so the
+# fixture presents a real HIVE price (0.05) and the helper uses it.
+PRICE_MAP = {"RICH": 0.001, "POORTOK": 0.001, "SWAP.HIVE": 0.05}
 TVL_MAP = {"CENT:TRIBE": 14398.0, "CENT:POOR": 1819.0}
 SPREAD_MAP = {"RICH": 0.02, "POORTOK": 0.02}
 
@@ -72,9 +76,9 @@ def _rph_apr_eq(dividend_usd, tvl):
     # APR-equivalent is rph*365/HIVE_USD*100. The old rph/HIVE_USD*100 (which
     # treated APR as a daily rate) understated the term 365x — it was correct
     # before the fix and is wrong now. The invariant these tests pin (the term
-    # is APR-equivalent and scales with reward-per-HIVE) is unchanged; only the
-    # arithmetic helper was stale.
-    return (dividend_usd / tvl) * 365.0 / L.HIVE_USD_ASSUMED * 100.0
+    # is APR-equivalent and scales with reward-per-HIVE) is unchanged; 2026-11-15
+    # (round 6): the HIVE USD now comes from the price map, not a constant.
+    return (dividend_usd / tvl) * 365.0 / PRICE_MAP["SWAP.HIVE"] * 100.0
 
 
 def _decide(tvl_map=None, weight=None):
@@ -138,8 +142,8 @@ class TestRewardPerHiveScoring(unittest.TestCase):
 
     def test_scores_carry_the_term_in_apr_equivalent_units(self):
         """The term's units, pinned by hand-check: rph 1.80/14398 = 1.25e-4
-        USD/day/HIVE -> APR-equiv 1.25e-4*365/0.057*100 = 79.99 points ->
-        (5.1 + 79.99) * 1.6 = 136.16. Matches the live code exactly."""
+        USD/day/HIVE -> APR-equiv 1.25e-4*365/0.05*100 = 91.25 points ->
+        (5.1 + 91.25) * 1.6 = 154.2. Matches the live code exactly."""
         r = _decide(tvl_map=TVL_MAP)
         v = r.verdicts["CENT:TRIBE"]
         expected = (DUST_BASE

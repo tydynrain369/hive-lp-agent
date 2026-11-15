@@ -62,6 +62,10 @@ class FakePE:
         }
         self.token_prices = prices or {
             "SWAP.HIVE": 0.3, "GLD": 1.0, "SLV": 2.0, "ALIVE": 0.01,
+            # 2026-11-15 (round 6, item 5): the pre-flight ADD SIMULATION
+            # needs every destination token priced (None is not 0) — PEPE
+            # joined the priced set when the sim landed.
+            "PEPE": 0.09,
         }
         self.pools = pools if pools is not None else {
             "SWAP.HIVE:GLD": _PoolRow(),
@@ -181,7 +185,11 @@ class FakeLP:
                                         min_amount_out=min_amount_out)
 
 
-def _sized_plan(pool="GLD:SLV", budget=0.05):
+def _sized_plan(pool="GLD:SLV", budget=0.04):
+    # 2026-11-15 (round 6, item 5): the pre-flight ADD SIMULATION refuses a
+    # plan whose expected position value exceeds the cap — the old $0.05
+    # budget left zero margin (expected == cap fails only on exact equality,
+    # and float drift pushed it over). $0.04 leaves honest headroom.
     return {"action": "deploy_idle", "pool": pool, "budget_usd": budget,
             "live": True, "cap_usd": 0.05,
             "sizing": {"status": "sized",
@@ -252,7 +260,7 @@ class TestExecutePreFlightAndThrottle(unittest.TestCase):
         chain = FakeChain(
             balances={("testacct", "SWAP.HIVE"): "1.0"},
             pools={"SWAP.HIVE:GLD": {"baseQuantity": "1000",
-                                     "quoteQuantity": "5000"}},
+                                     "quoteQuantity": "300"}},
             # NO pool for SWAP.HIVE:SLV → the quote leg could never route
             positions={("testacct", "GLD:SLV"): "0.0"},
         )
@@ -272,9 +280,9 @@ class TestExecutePreFlightAndThrottle(unittest.TestCase):
         chain = FakeChain(
             balances={("testacct", "SWAP.HIVE"): "1.0"},
             pools={"SWAP.HIVE:GLD": {"baseQuantity": "1000",
-                                     "quoteQuantity": "5000"},
+                                     "quoteQuantity": "300"},
                    "SWAP.HIVE:SLV": {"baseQuantity": "1000",
-                                     "quoteQuantity": "2500"},
+                                     "quoteQuantity": "150"},
                    "GLD:SLV": {"baseQuantity": "1000",
                                "quoteQuantity": "500"}},
             positions={("testacct", "GLD:SLV"): "0.0"},
@@ -326,7 +334,7 @@ class TestExecutePreFlightAndThrottle(unittest.TestCase):
         chain = FakeChain(
             balances={("testacct", "SWAP.HIVE"): "1.0"},
             pools={"SWAP.HIVE:PEPE": {"baseQuantity": "1000",
-                                      "quoteQuantity": "5000"},
+                                      "quoteQuantity": "300"},
                    "PEPE:SWAP.HIVE": {"baseQuantity": "5000",
                                       "quoteQuantity": "1000"}},
             positions={("testacct", "PEPE:SWAP.HIVE"): "0.0"},
@@ -366,9 +374,9 @@ class TestExecutePreFlightAndThrottle(unittest.TestCase):
         chain = FakeChain(
             balances={("testacct", "SWAP.HIVE"): "1.0"},
             pools={"SWAP.HIVE:GLD": {"baseQuantity": "1000",
-                                     "quoteQuantity": "5000"},
+                                     "quoteQuantity": "300"},
                    "SWAP.HIVE:SLV": {"baseQuantity": "1000",
-                                     "quoteQuantity": "2500"},
+                                     "quoteQuantity": "150"},
                    "GLD:SLV": {"baseQuantity": "1000",
                                "quoteQuantity": "500"}},
             positions={("testacct", "GLD:SLV"): "0.0"},
@@ -395,9 +403,9 @@ class TestVerifyPoll(unittest.TestCase):
         chain = FakeChain(
             balances={("testacct", "SWAP.HIVE"): "1.0"},
             pools={"SWAP.HIVE:GLD": {"baseQuantity": "1000",
-                                     "quoteQuantity": "5000"},
+                                     "quoteQuantity": "300"},
                    "SWAP.HIVE:SLV": {"baseQuantity": "1000",
-                                     "quoteQuantity": "2500"},
+                                     "quoteQuantity": "150"},
                    "GLD:SLV": {"baseQuantity": "1000",
                                "quoteQuantity": "500"}},
             positions={("testacct", "GLD:SLV"): "0.0"},

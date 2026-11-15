@@ -31,10 +31,18 @@ POOL = "AAA:BBB"
 STEADY_APR = 109.5
 
 
+# 2026-11-15 (round 6 freshness gate): snapshots anchor to NOW — the old
+# epoch-relative at_ms made every fixture ~55 years stale, which the new
+# freshness horizon correctly reads as UNMEASURABLE.
+_NOW_MS = int(__import__("time").time() * 1000)
+_NEWEST_H = 44   # the largest at_h any fixture uses
+
+
 def _snap(at_h, base_vol, quote_vol, base_res=1000.0, quote_res=1000.0,
           share_num=1, share_den=1, status="ok"):
-    return {"pool": POOL, "at_ms": at_h * HOUR, "snapshot": {
-        "at_ms": at_h * HOUR, "status": status,
+    _ms = _NOW_MS - (_NEWEST_H - at_h) * HOUR
+    return {"pool": POOL, "at_ms": _ms, "snapshot": {
+        "at_ms": _ms, "status": status,
         "share": {"num": share_num, "den": share_den},
         "volumes": {"baseVolume": base_vol, "quoteVolume": quote_vol},
         "reserves": {"AAA": base_res, "BBB": quote_res},

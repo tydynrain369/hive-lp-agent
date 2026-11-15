@@ -129,9 +129,13 @@ class TestRefusals(unittest.TestCase):
 class TestSizing(unittest.TestCase):
 
     def test_percentage_is_correct_for_the_contract(self):
-        """sharesOut is a PERCENTAGE (0-100, max 3dp), not an absolute count."""
+        """sharesOut is a PERCENTAGE (0-100, max 3dp), not an absolute count.
+        2026-11-15 (round 6, item 4): the 25% per-action ceiling binds first,
+        so a full-position exit is now incremental by design (ceil(100/25) = 4
+        actions, each backlog-bound) — the pin asserts the ceiling-computed
+        percentage stays in the contract's 0-100 form."""
         p = plan_with(FakeExecutor(shares=10.0, value=0.01), decision())
-        self.assertEqual(p["remove_pct_of_position"], 100.0)
+        self.assertEqual(p["remove_pct_of_position"], 25.0)
         self.assertLessEqual(p["remove_pct_of_position"], 100.0)
 
     def test_cap_reduces_the_percentage(self):
@@ -139,8 +143,12 @@ class TestSizing(unittest.TestCase):
         X.MAX_USD_PER_ACTION = 0.005
         try:
             p = plan_with(FakeExecutor(shares=10.0, value=0.01), decision())
-            self.assertEqual(p["remove_value_usd"], 0.005)
-            self.assertEqual(p["remove_pct_of_position"], 50.0)
+            # 2026-11-15 (round 6, item 4): the price-independent 25% ceiling
+            # now binds BEFORE the USD cap on this fixture (50% > 25%), so
+            # the removal is reduced to 25% of the position = $0.0025. The
+            # USD cap remains the second net under it.
+            self.assertEqual(p["remove_value_usd"], 0.0025)
+            self.assertEqual(p["remove_pct_of_position"], 25.0)
             self.assertIsNotNone(p["cap_note"])
         finally:
             X.MAX_USD_PER_ACTION = old

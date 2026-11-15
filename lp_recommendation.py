@@ -43,6 +43,12 @@ SECONDS_PER_YEAR_H = 8760
 # aggregation shape instead of drifting further apart.
 FEE_APR_WINSOR_PCT = 0.90     # clamp the top decile of the ACTIVE intervals
 FEE_APR_MIN_INTERVALS = 5     # below this there is nothing worth trimming
+# 2026-11-15 (Fable round 6, triage item 8): a fee measurement is only a
+# measurement while its evidence is FRESH. A newest snapshot older than this
+# means the volume since then is unobserved — the APR would be a figure about
+# a pool we are no longer watching. Past the horizon the returned APR is None
+# (unmeasurable, the hold-unknown verdict) with the age surfaced.
+FEE_APR_MAX_SNAPSHOT_AGE_H = 48.0
 _SNAPSHOT_CACHE = {}
 
 
@@ -110,7 +116,18 @@ def _interval_fee_aprs(snaps, price_map=None):
             dt_h = (int(b["at_ms"]) - int(a["at_ms"])) / 3_600_000.0
             if dt_h <= 0:
                 continue
-            share = float(sa["share"]["num"]) / float(sa["share"]["den"])
+            # 2026-11-15 (Fable round 6, triage item 8): a missing share block
+            # used to DISCARD the interval. For the APR the share cancels
+            # (fees and TVL both scale by it) — the interval is still a valid
+            # APR observation with share=1; only the EARNED attribution needs
+            # the real share, so those rows contribute APR but never earnings
+            # (has_share=False).
+            _sh = sa.get("share") or {}
+            try:
+                share = float(_sh["num"]) / float(_sh["den"])
+                has_share = True
+            except (KeyError, TypeError, ValueError, ZeroDivisionError):
+                share, has_share = 1.0, False
             va, vb = sa["volumes"], sb["volumes"]
             d_base = float(vb["baseVolume"]) - float(va["baseVolume"])
             d_quote = float(vb["quoteVolume"]) - float(va["quoteVolume"])
@@ -148,7 +165,7 @@ def _interval_fee_aprs(snaps, price_map=None):
         # APR above carries the /2; consumers that aggregate these must too.
         obs.append((apr_pct,
                     d_base * FEE_RATE * share, d_quote * FEE_RATE * share,
-                    dt_h))
+                    dt_h, has_share))
     return obs, unpriced
 
 
@@ -193,8 +210,11 @@ def measure_fee_apr(pool, price_map=None):
 
     Returns fee_apr_pct, earned_base, earned_quote and window_h, plus audit
     fields (intervals, capped_intervals, unpriced_intervals, apr_median,
-    apr_max). None when no interval qualifies -- never a fabricated 0, so a
-    caller cannot mistake "unmeasurable" for "measured zero".
+    apr_max, shareless_intervals). None when no interval qualifies -- never a
+    fabricated 0, so a caller cannot mistake "unmeasurable" for "measured
+    zero". 2026-11-15 (Fable round 6, triage item 8): a newest snapshot older
+    than FEE_APR_MAX_SNAPSHOT_AGE_H returns fee_apr_pct=None with stale=True
+    and the age — an out-of-date fee measurement is not a measurement.
 
     price_map (token -> USD) is required for the USD valuation: without
     prices the intervals are unpriced and the APR is None — never a
@@ -206,14 +226,39 @@ def measure_fee_apr(pool, price_map=None):
     obs, unpriced = _interval_fee_aprs(snaps, price_map)
     if not obs:
         return None
+    # 2026-11-15 (Fable round 6, triage item 8): FRESHNESS. A newest
+    # snapshot older than the horizon means the pool's volume since then is
+    # unobserved — the APR would describe a pool we stopped watching. Fail
+    # closed: the APR is None (unmeasurable -> hold-unknown verdict) with
+    # the age surfaced for the report.
+    _now_ms = int(datetime.now().timestamp() * 1000)
+    _age_h = (_now_ms - int(snaps[-1].get("at_ms") or 0)) / 3_600_000.0
+    if _age_h > FEE_APR_MAX_SNAPSHOT_AGE_H:
+        return {
+            "fee_apr_pct": None,
+            "stale": True,
+            "last_snapshot_age_h": round(_age_h, 2),
+            "earned_base": None,
+            "earned_quote": None,
+            "window_h": None,
+            "intervals": len(obs),
+            "note": (f"newest snapshot {_age_h:.1f}h old (> "
+                     f"{FEE_APR_MAX_SNAPSHOT_AGE_H:.0f}h horizon) — fee "
+                     f"evidence UNMEASURABLE, not zero"),
+        }
     aprs = [o[0] for o in obs]
     dts = [o[3] for o in obs]
     apr_pct, cap = _winsorised_mean(aprs, dts=dts)
     srt = sorted(aprs)
+    _shared = [o for o in obs if o[4]]
     return {
         "fee_apr_pct": round(apr_pct, 3),
-        "earned_base": sum(o[1] for o in obs),
-        "earned_quote": sum(o[2] for o in obs),
+        # share-less rows contribute the APR but never earnings: the earned
+        # attribution is OUR share of the flow, and an unknown share is not
+        # inventable (share-less count surfaced for audit)
+        "shareless_intervals": len(obs) - len(_shared),
+        "earned_base": sum(o[1] for o in _shared) if _shared else None,
+        "earned_quote": sum(o[2] for o in _shared) if _shared else None,
         # Sum of the CONTRIBUTING intervals, not the first-to-last span: the
         # numerator sums those same intervals, so a gap between them must not
         # be charged as hours we earned nothing in.

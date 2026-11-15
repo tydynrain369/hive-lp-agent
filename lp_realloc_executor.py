@@ -8,16 +8,17 @@ WHY A NEW MODULE
   only LOGS a recommended_reallocation. Editing it would also destroy the
   artifact we still need for comparison.
 
-SCOPE — DELIBERATELY INCOMPLETE
-  This module can REMOVE liquidity from a consolidate/exit source pool. It can
-  plan and validate the destination deposit but CANNOT broadcast one, because:
-
-    * the sizing math that decides how much goes where does not exist yet, and
-    * LEG B (growing a position toward its threshold with new capital) needs
-      that math plus a real position to test it against, not dust.
+SCOPE — DELIBERATELY INCOMPLETE (docstring corrected 2026-11-15, Fable round 6)
+  This module REMOVES liquidity from a consolidate/exit source pool and stages
+  the deposit (Leg A). The REALLLOCATION deposit itself still stops at a plan:
+  the deposit half of Leg B (growing a position with the staged capital) is
+  not implemented — the staged balance waits for a manual act or the ladder.
+  What CAN broadcast here is the FROM-IDLE deploy (execute_idle_deploy): the
+  ladder's destination deposits, two-key-gated, capped, pre-flight-simulated.
 
   A half-built deposit path that "looks runnable" is exactly the failure mode
-  that produced run_live_once.py. So the deposit side stops at a plan.
+  that produced run_live_once.py. So the reallocation deposit side stops at a
+  plan.
 
 GUARDS (unchanged in spirit from the legacy executor)
   - DRY-RUN is the default; broadcast requires LP_TEST_LIVE=1 AND --execute.
@@ -173,6 +174,13 @@ SOURCE_POOL_LIQUIDITY_FLOOR = 0.01
 # something intended to operate autonomously — an agent that plans moves it
 # cannot justify is worse than one that plans nothing.
 ROUTE_COST_REFUSAL_PCT = 1.0
+
+# 2026-11-15 (Fable round 6, triage item 4): PRICE-INDEPENDENT per-action
+# ceilings. The USD cap depends on pricing being right; these do not. Both
+# are generous relative to the current dust-scale book — they are the GATES
+# Tydyn must revisit (and consciously raise) before any cap raise.
+MAX_REMOVAL_PCT_PER_ACTION = 25.0   # % of any one position, per action
+MAX_DEPLOY_HIVE_PER_ACTION = 1.0    # HIVE spent from idle, per deploy
 
 _ADJ_CACHE = {}
 
@@ -618,6 +626,32 @@ def _size_deposit_stage(agent, dest_pool, budget_usd):
     return out
 
 
+def _staged_deposit_outstanding():
+    """Timestamp+pool of the most recent remove_and_stage whose deposit was
+    never implemented (i.e. the stage is still the terminal state), or None.
+    Backlog bound (Fable round 6, triage item 6): refuse new removals while
+    a staged deposit sits unconsumed. Unreadable log = no evidence of a
+    stage = the gate stays OPEN (removals are themselves capped and
+    verified; an unreadable ledger must not freeze the agent)."""
+    try:
+        last = None
+        with open(REALLOC_LOG) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                plan = row.get("plan") or {}
+                if plan.get("action") == "remove_and_stage":
+                    last = (row.get("timestamp"), plan.get("from_pool"))
+        return last
+    except OSError:
+        return None
+
+
 def plan_reallocation(agent, decision, advisory=None, allow_challenge=False):
     """Pure planning. Touches no chain, broadcasts nothing.
 
@@ -634,6 +668,21 @@ def plan_reallocation(agent, decision, advisory=None, allow_challenge=False):
         return {"action": "none", "reason": "reallocation is missing a leg"}
     if src == dst:
         return {"action": "none", "reason": "source and destination are the same"}
+
+    # --- BACKLOG BOUND (2026-11-15, Fable round 6 triage item 6) ----------
+    # A completed remove_and_stage leaves the released capital STAGED (the
+    # deposit half of Leg B is deliberately not implemented). Removing more
+    # while a staged deposit sits unconsumed stacks stranded positions and
+    # widens the manual-rebalance surface. One outstanding stage is the
+    # bound; consuming it (manual act or ladder deploy) clears the gate.
+    _outstanding = _staged_deposit_outstanding()
+    if _outstanding:
+        return {"action": "blocked",
+                "reason": ("staged deposit outstanding from a previous "
+                           f"remove_and_stage ({_outstanding}) — consume or "
+                           f"rebalance it before removing more"),
+                "from_pool": src, "to_pool": dst,
+                "outstanding_stage": _outstanding}
 
     # --- ROUTE GUARD (2026-10-02) ---------------------------------------
     # A removal yields the SOURCE pool's two tokens. If those cannot reach the
@@ -683,6 +732,16 @@ def plan_reallocation(agent, decision, advisory=None, allow_challenge=False):
         capped_value = MAX_USD_PER_ACTION
         cap_note = (f"value ${value:.6f} exceeds the ${MAX_USD_PER_ACTION} cap; "
                     f"the removal would be proportionally reduced")
+
+    # 2026-11-15 (Fable round 6, triage item 4): PRICE-INDEPENDENT ceiling.
+    # The USD cap above prices the position; if pricing is ever wrong (or a
+    # future cap raise loosens it), this pct ceiling still bounds how much of
+    # ANY position one action can move. Operator-set gate for cap raises.
+    if (capped_value / value) * 100.0 > MAX_REMOVAL_PCT_PER_ACTION:
+        capped_value = value * (MAX_REMOVAL_PCT_PER_ACTION / 100.0)
+        cap_note = (cap_note or "removal exceeds the "
+                    f"{MAX_REMOVAL_PCT_PER_ACTION:.0f}% per-action ceiling; "
+                    "proportionally reduced")
 
     # Percentage form required by the Hive-Engine contract: sharesOut is a
     # PERCENTAGE of the position (0-100, max 3dp), not an absolute count.
@@ -903,7 +962,8 @@ def main():
 # every existing gate stacked: the $0.05 hard cap, per-leg route
 # spread <= the 1% ceiling, validated-price sizing (never invents
 # a quantity), LIVE_MODE + --execute to broadcast, and a
-# once-per-day throttle so the agent cannot dust-add in a loop.
+# 6-hour throttle (IDLE_DEPLOY_MIN_INTERVAL_HOURS) so the agent
+# cannot dust-add in a loop.
 
 IDLE_DEPLOY_THROTTLE = os.path.expanduser(
     "~/.hermes/lp_tests/LAST_IDLE_DEPLOY")
@@ -915,7 +975,7 @@ IDLE_DEPLOY_MIN_USD = 0.0005   # 2026-11-01: was 0.03 — the wallet holds
                                   # (swap legs, ratio-matched add, on-chain
                                   # verify) works at any size. 0.0005 keeps
                                   # the gate meaningful below dust while the
-                                  # once-per-day throttle prevents looping.
+                                  # 6-hour throttle prevents looping.
 
 # 2026-11-01: the throttle was once-per-calendar-day, keyed on a date
 # string. That was never the binding constraint: each deploy sizes to
@@ -955,12 +1015,16 @@ def _idle_deploy_throttled():
 
 
 def _mark_idle_deploy():
+    """2026-11-15 (Fable round 6, triage item 5): returns whether the mark
+    LANDED. The old swallow-and-pass let a failed write proceed to broadcast,
+    leaving the next tick free to re-deploy on top of a partial failure."""
     from datetime import datetime, timezone
     try:
         with open(IDLE_DEPLOY_THROTTLE, "w") as fh:
             fh.write(datetime.now(timezone.utc).isoformat())
+        return True
     except Exception:
-        pass
+        return False
 
 
 def plan_idle_deploy(agent, decision, advisory=None):
@@ -1173,7 +1237,10 @@ def execute_idle_deploy(agent, plan, allow_execute):
         IN, 0) or 0)
     budget_hive = min(
         budget_usd / hive_px if hive_px > 0 else 0.0,
-        pre_hive * 0.98)          # never touch the last 2% (fees)
+        pre_hive * 0.98,          # never touch the last 2% (fees)
+        # 2026-11-15 (Fable round 6, triage item 4): price-independent
+        # ceiling — bounds one deploy no matter what pricing says.
+        MAX_DEPLOY_HIVE_PER_ACTION)
     # 2026-11-01: was `<= 0.10` (a bare 0.10 HIVE literal, unrelated to
     # the deploy floor). With ~0.026 SWAP.HIVE idle this gate fired before
     # the USD floor even evaluated, so the agent could never deploy at any
@@ -1244,12 +1311,86 @@ def execute_idle_deploy(agent, plan, allow_execute):
             _log({"action": "deploy_idle", "status": "pre-flight-refused",
                   "reason": plan["reason"], "live": True})
             return plan
+
+    # 2026-11-15 (Fable round 6, triage item 5): SIMULATE THE ADD before any
+    # broadcast. TestExecutor.add_liquidity recomputes the cap from the
+    # ACTUAL amounts and quantizes to token precision; a refusal THERE comes
+    # after the swaps have broadcast and strands the tokens until the manual
+    # rebalance. Mirror its gates here with the EXPECTED amounts (current
+    # pool ratios, same env cap) and refuse first — the sim can only widen
+    # the refuse set, never narrow it (actual amounts are checked again at
+    # the add).
+    _pe = getattr(agent, "pe", None)
+    _px = (getattr(_pe, "token_prices", {}) or {}) if _pe else {}
+    _cap = float(os.environ.get("LP_TEST_MAX_USD", "0.05"))
+    _exp_amts = {}
+    for _side, _tok, _pair in _swap_sides:
+        _b, _q = _ratio(_pair)
+        if not _b or not _q:
+            plan["executed"] = False
+            plan["reason"] = (f"pre-flight: pool {_pair} unreadable for the "
+                              f"{_tok} add simulation — refusing before any "
+                              f"broadcast")
+            _log({"action": "deploy_idle", "status": "pre-flight-refused",
+                  "reason": plan["reason"], "live": True})
+            return plan
+        _per = (_q / _b) if _pair.split(":")[0] == IN else (_b / _q)
+        _exp_amts[_tok] = _exp_amts.get(_tok, 0.0) + leg_hive * _per
+    # identity side: its leg never swaps — it contributes leftover HIVE
+    # (budget_hive minus the swap legs) as the IN token
+    _identity_leg = budget_hive - leg_hive * len(_swap_sides)
+    if _identity_leg > 0:
+        _exp_amts[IN] = _exp_amts.get(IN, 0.0) + _identity_leg
+    _missing_px = [t for t in (base, quote) if _px.get(t) is None]
+    if _missing_px:
+        plan["executed"] = False
+        plan["reason"] = (f"pre-flight: price unknown for {_missing_px} — "
+                          f"the add's cap is not computable (None is not 0); "
+                          f"refusing before any broadcast")
+        _log({"action": "deploy_idle", "status": "pre-flight-refused",
+              "reason": plan["reason"], "live": True})
+        return plan
+    _exp_usd = sum(_exp_amts.get(t, 0.0) * float(_px[t])
+                   for t in (base, quote))
+    if _exp_usd > _cap:
+        plan["executed"] = False
+        plan["reason"] = (f"pre-flight: simulated add values at "
+                          f"${_exp_usd:.4f} vs the ${_cap} cap — refusing "
+                          f"before any broadcast (the add would refuse and "
+                          f"strand the swapped legs)")
+        _log({"action": "deploy_idle", "status": "pre-flight-refused",
+              "reason": plan["reason"], "live": True})
+        return plan
+    if _pe is not None:
+        try:
+            for _t in (base, quote):
+                if _exp_amts.get(_t):
+                    _pe.round_amount(_t, _exp_amts[_t])
+        except ValueError as _ve:
+            plan["executed"] = False
+            plan["reason"] = (f"pre-flight: precision — {_ve} — refusing "
+                              f"before any broadcast")
+            _log({"action": "deploy_idle", "status": "pre-flight-refused",
+                  "reason": plan["reason"], "live": True})
+            return plan
+
     # THROTTLE MARKED BEFORE THE FIRST BROADCAST (Opus review N1): the PEPE
     # loop (ledger 11-01/11-02) re-swapped hourly because the mark was written
     # only on fully-verified success. From here on something may broadcast; a
     # partial failure must wait out the interval, and the stranded-leg
     # rebalance is a manual act.
-    _mark_idle_deploy()
+    # 2026-11-15 (Fable round 6, triage item 5): a FAILED mark must abort —
+    # the throttle is exactly what stops the next tick from re-deploying on
+    # top of a partial failure. Fail closed before anything broadcasts.
+    if not _mark_idle_deploy():
+        plan["executed"] = False
+        plan["reason"] = ("pre-flight: cannot write the idle-deploy throttle "
+                          f"({IDLE_DEPLOY_THROTTLE}) — refusing before any "
+                          f"broadcast (an unmarked deploy invites a repeat "
+                          f"next tick)")
+        _log({"action": "deploy_idle", "status": "pre-flight-refused",
+              "reason": plan["reason"], "live": True})
+        return plan
     _spent = 0.0   # HIVE actually consumed by swaps (identity sides spend 0)
 
     def _swap_leg(out_sym, leg_amount):
@@ -1264,7 +1405,11 @@ def execute_idle_deploy(agent, plan, allow_execute):
         # out-per-hive: whichever side is SWAP.HIVE is the input
         per_hive = (q / b) if pair.split(":")[0] == IN else (b / q)
         expect = leg_amount * per_hive
-        min_out = _floor8(expect * 0.95)
+        # 2026-11-15 (Fable round 6, triage item 5): the slippage floor must
+        # MATCH the route ceiling. A 5% floor let the execution leg drift five
+        # times further than the 1% route gate admits — the ceiling was moot
+        # at broadcast time.
+        min_out = _floor8(expect * (1.0 - ROUTE_COST_REFUSAL_PCT / 100.0))
         if min_out <= 0:
             return False, None, "degenerate expected output"
         # ROUTE-COST CEILING (2026-11-13, Claude review P0-5): Tydyn's 1%
