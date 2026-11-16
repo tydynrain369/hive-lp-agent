@@ -661,7 +661,11 @@ def _staged_deposit_outstanding():
                 removal = row.get("removal")
                 if (plan.get("action") == "remove_and_stage"
                         and isinstance(removal, dict)
-                        and removal.get("status") == "broadcast"):
+                        # 2026-11-15 (Fable round 8, A-2b): "error" latches
+                        # too — a node-accepted-but-lost-reply removal may
+                        # have staged capital; fail closed on the ambiguity,
+                        # cleared by the same operator record.
+                        and removal.get("status") in ("broadcast", "error")):
                     staged = (row.get("timestamp"), plan.get("from_pool"))
         return staged
     except OSError:

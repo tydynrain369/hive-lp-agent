@@ -445,6 +445,9 @@ class PriceEngine:
         self.held_pools: set = set()
         self.token_prices: Dict[str, float] = {}
         self.token_precisions: Dict[str, int] = {}  # symbol -> precision
+        # round 8 (B-3): symbols whose precision the CHAIN confirmed (vs a
+        # defaults fallback) — pass 2 skips only these.
+        self._precision_confirmed: set = set()
         # 2026-10-02: liquidity verdicts for tokens priced from the market
         # order book rather than from pool reserves. Declared here so a caller
         # can read it even when load_all() has not run or market pricing failed.
@@ -469,7 +472,11 @@ class PriceEngine:
             "BEE", "HSBIDAO", "PIXYDUST", "UNICOIN", "SWAP.HIVE", "HIVE",
             "PSX", "DEC", "WEED"
         ])
-        symbols -= set(self.token_precisions)   # already known: skip
+        # 2026-11-15 (Fable round 8, B-3): skip only CHAIN-CONFIRMED symbols.
+        # The defaults dict installs fallback precisions after a failed query;
+        # skipping those would let invented precision stand in for chain truth
+        # even after the node recovers.
+        symbols -= getattr(self, "_precision_confirmed", set())
         if not symbols:
             return
         try:
@@ -482,8 +489,15 @@ class PriceEngine:
                 sym = row.get("symbol")
                 if sym and row.get("precision") is not None:
                     self.token_precisions[sym] = int(row["precision"])
-        except Exception:
-            pass
+                    self._precision_confirmed.add(sym)
+        except Exception as _e:
+            # 2026-11-15 (Fable round 8, B-2): silence here made the armed
+            # tick's outcome illegible — a refused $in query left symbols
+            # unknown and the deploy refused without a why.
+            print(f"  PriceEngine: precision batch query FAILED "
+                  f"({type(_e).__name__}: {str(_e)[:120]}) — "
+                  f"{len(symbols)} symbol(s) remain precision-unknown; "
+                  f"deploys into them will refuse")
         # Defaults for tokens not in the list
         defaults = {
             "SWAP.HIVE": 8, "HIVE": 3, "HBD": 3,

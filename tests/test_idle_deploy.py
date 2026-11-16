@@ -522,5 +522,29 @@ class TestAddLiquidityPrecisionAndCap(unittest.TestCase):
         self.assertIn("price unknown", entry["note"])
 
 
+    def test_failed_throttle_write_aborts_before_broadcast(self):
+        """Round 8 (A-7): the ABORT pin — a failed _mark_idle_deploy returns
+        must hold the whole deploy pre-broadcast, not just report False."""
+        chain = FakeChain(
+            balances={("testacct", "SWAP.HIVE"): "1.0"},
+            pools={"SWAP.HIVE:GLD": {"baseQuantity": "1000",
+                                     "quoteQuantity": "300"},
+                   "SWAP.HIVE:SLV": {"baseQuantity": "1000",
+                                     "quoteQuantity": "150"},
+                   "GLD:SLV": {"baseQuantity": "1000",
+                               "quoteQuantity": "500"}},
+            positions={("testacct", "GLD:SLV"): "0.0"},
+        )
+        with tempfile.TemporaryDirectory() as td:
+            with deploy_env(chain, td), \
+                 patch.object(X, "_mark_idle_deploy", return_value=False):
+                plan = X.execute_idle_deploy(FakeAgent(), _sized_plan("GLD:SLV"),
+                                             allow_execute=True)
+            self.assertFalse(plan.get("executed"))
+            self.assertIn("throttle", plan.get("reason", ""))
+            self.assertEqual(chain.swaps, [],
+                             "a failed throttle mark must stop the swaps")
+
+
 if __name__ == "__main__":
     unittest.main()

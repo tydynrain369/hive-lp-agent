@@ -968,6 +968,11 @@ def main():
         # decision try's soft-catch and silently degrading the whole verdict.
         eco_map = {}
         th_map = {}
+        # 2026-11-15 (Fable round 8, B-1): bound ABOVE the decision try —
+        # a decide()/write_decision() crash previously left _adv_verdict
+        # unbound, turning "Decision step failed (non-fatal)" into an
+        # UnboundLocalError at the exit gate.
+        _adv_verdict = None
         if rec:
             eco_map = {p: v.get("position_economics")
                        for p, v in rec["verdicts"].items()
@@ -1057,7 +1062,6 @@ def main():
         # AFTER it is written and can change nothing. It never sees keys, never
         # produces an amount, and its verdict is stored in a sidecar file.
         # Any failure here is swallowed: advisory must never break the agent.
-        _adv_verdict = None   # round 7 A-6: bound even if the advisory step fails
         try:
             import lp_advisory
             rec_verdicts = {}

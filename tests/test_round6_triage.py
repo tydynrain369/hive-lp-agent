@@ -12,6 +12,7 @@ import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import lp_recommendation as R
@@ -171,13 +172,20 @@ class TestHeBreakerEntry(unittest.TestCase):
     def test_dead_ring_raises_immediately_on_paginated_find(self):
         import liquidity_agent_v2 as LAV2
         calls = []
+        # round 8 (A-7): wire the counter — the old assertEqual(calls, [])
+        # was vacuous (nothing appended to it)
+        real_bounded = LAV2._call_bounded
+        def counting(*a, **kw):
+            calls.append(a)
+            return real_bounded(*a, **kw)
         old_dead, old_idx = LAV2._HE_RING_DEAD[0], LAV2._HE_NODE_IDX[0]
         LAV2._HE_RING_DEAD[0] = True
         LAV2._HE_NODE_IDX[0] = 0
         try:
-            with self.assertRaises(RuntimeError) as ctx:
-                LAV2.he("find", {"contract": "c", "table": "t",
-                                 "query": {}, "limit": 10})
+            with patch.object(LAV2, "_call_bounded", counting):
+                with self.assertRaises(RuntimeError) as ctx:
+                    LAV2.he("find", {"contract": "c", "table": "t",
+                                     "query": {}, "limit": 10})
             self.assertIn("circuit breaker", str(ctx.exception))
             self.assertEqual(calls, [])   # no wire attempt at all
         finally:
@@ -224,8 +232,6 @@ class TestSealCoversEverything(unittest.TestCase):
         # must reach the tracker's constructor.
         import conftest
         import lp_test_tracker as T
-        sealed_db = dict(conftest._SEALED)[("lp_test_tracker", "DB_PATH")] \
-            if isinstance(conftest._SEALED, dict) else None
         t = T.LPTestTracker(config={})
         self.assertTrue(str(getattr(t, "db_path", "")).startswith(
             tempfile.gettempdir()),
