@@ -50,6 +50,11 @@ NODE = NODES[0]
 LP_DIR = os.path.expanduser("~/.hermes/lp_tests")
 REALLOC_LOG = os.path.join(LP_DIR, "reallocations.jsonl")
 EXEC_LOG = os.path.join(LP_DIR, "test_executions.jsonl")
+# 2026-11-16 reconciliation: 31 pre-fix broadcasts (Oct 9 - Nov 3) that predate
+# the ledger-logging fixes were backfilled from chain evidence with per-op
+# provenance (actor path + why-unlogged). The chain is ground truth; these rows
+# record it. They count as "logged" so the audit measures ONGOING coverage.
+BACKFILL_LOG = os.path.join(LP_DIR, "chain_backfill.jsonl")
 
 MARKETPOOLS_ID = "ssc-mainnet-hive"
 
@@ -174,6 +179,7 @@ def main() -> int:
 
     reap = ledger_trx_ids(REALLOC_LOG)
     eexc = ledger_trx_ids(EXEC_LOG)
+    bf = ledger_trx_ids(BACKFILL_LOG)
 
     try:
         ops, scanned = fetch_liquidity_ops(args.account, pages=args.pages)
@@ -189,6 +195,8 @@ def main() -> int:
             where.append("reallocations")
         if o["trx_id"] in eexc:
             where.append("test_executions")
+        if o["trx_id"] in bf:
+            where.append("chain_backfill")
         if o["ts"] < FIRST_LEDGER_TS:
             pre += 1
             continue
@@ -200,7 +208,8 @@ def main() -> int:
     # A ledger row whose trx never landed is the reverse fault: it records a
     # capital move the chain has no evidence of.
     onchain = {o["trx_id"] for o in ops}
-    for ledger_name, ids in (("reallocations", reap), ("test_executions", eexc)):
+    for ledger_name, ids in (("reallocations", reap), ("test_executions", eexc),
+                             ("chain_backfill", bf)):
         for trx, lines in ids.items():
             if trx not in onchain:
                 unbacked.append({"trx_id": trx, "ledger": ledger_name,
@@ -213,6 +222,7 @@ def main() -> int:
         "pre_ledger_ops": pre,
         "reallocations_entries_trx": len(reap),
         "test_executions_entries_trx": len(eexc),
+        "chain_backfill_entries_trx": len(bf),
         "unlogged": unlogged,
         "unbacked": unbacked,
     }
@@ -228,6 +238,7 @@ def main() -> int:
               f"ops, {post - len(unlogged)} logged, {len(unlogged)} unlogged")
         print(f"  reallocations.jsonl trx_ids  : {len(reap)}")
         print(f"  test_executions.jsonl trx_ids: {len(eexc)}")
+        print(f"  chain_backfill.jsonl trx_ids : {len(bf)} (2026-11-16 reconciliation)")
         print()
         if unlogged:
             print(f"  UNLOGGED ON-CHAIN ACTIONS ({len(unlogged)}) "
